@@ -7,26 +7,22 @@ A plugin to extract topotags from video footage in Blender.
 import math
 import numpy
 from dataclasses import dataclass, field
-
-@dataclass
-class TopoTag:
-	tag_id: int  # The computed ID of the tag.
-	island_id: int  # The raw connected component image has this ID.
-	vertex_positions: list  # A list of tuples of x,y, NOT y,x.
-	pose: list
+from typing import Optional, Tuple
 
 @dataclass
 class IslandBounds:
 	id: int = -1
 	num_pixels: int = 0
-	children: list = field(default_factory=list)
+	children: set = field(default_factory=set)  # A set of child IDs, not objects.
 	x_min: int = 0
 	y_min: int = 0
 	x_max: int = 0
 	y_max: int = 0
 
-	def contains(self, other) -> bool:
+	def __contains__(self, other) -> bool:
 		"""Returns True if other (an IslandBounds instance) is entirely inside this."""
+		if not isinstance(other, IslandBounds):
+			raise TypeError("Other is not an instance of IslandBounds")
 		if other.x_min <= self.x_min:
 			return False
 		if other.x_max >= self.x_max:
@@ -43,6 +39,69 @@ class IslandBounds:
 		self.y_min = min(self.y_min, y)
 		self.x_max = max(self.x_max, x)
 		self.y_max = max(self.y_max, y)
+
+	@property
+	def center(self) -> Tuple[int, int]:
+		"""Returns the x,y coordinate of the unweighted center of this rectangle."""
+		return (self.x_max+self.x_min)//2, (self.y_max+self.y_min//2)
+
+@dataclass
+class TopoTag:
+	tag_id: int  # The computed ID of the tag.
+	island_id: int  # The raw connected component image has this ID.
+	n: int  # The 'order' of the topotag, i.e., the sqrt of the number of internal bits.
+	vertex_positions: list  # A list of tuples of x,y, NOT y,x.
+	pose: list
+
+	@staticmethod
+	def from_island_data(island_id, island_data: list, island_matrix: numpy.typing.ArrayLike) -> Optional:
+		"""Given the ID of an island to decode, the list of all island data, and the matrix of connected components,
+		attempt to decode the island with the given ID into a TopoTag.  Will return a TopoTag or None."""
+
+		# The first pixel of each region is labeled with a capital letter.
+		# island_id in this case will be 'A' (though it's actually an int)
+		# When we locate the first region, it will be ID B.
+		# We expect that all children of A, [B, E, G, H] to have one or zero children. (Except B.)
+		#
+		# ##################
+		# #A              #
+		# # B####     E## #
+		# # #C#D#     #F# #
+		# # #####     ### #
+		# #               #
+		# # G##       H## #
+		# # ###       #I# #
+		# # ###       ### #
+		# #               #
+		# #################
+		#
+
+		# NOTE: We do not re-evaluate the 'contains' of the children.  We assume that they're all 'inside'.
+
+		# For efficiency, we do two things in this pass:
+		# - Find the 'first' region -- the one with exactly two children.
+		# - While we're at it, make sure that none of the child regions have a depth of more than one.
+		#   Each child needs exactly one or zero children.
+		first_region_id = None
+		for child_id in island_data[island_id].children:  # Should be n^2 children...
+			if len(island_data[child_id].children) == 2:  # This black region, if it's the first, needs two children.
+				# This corresponds to 'B' in our diagram above.
+				if first_region_id is not None:
+					# We already found a first region, so this means there's more than one and this is not a valid tag.
+					return None
+				first_region_id = child_id  # Otherwise, valid candidate.
+			# A child node other than the first can have one or zero children. E, G, or H in our diagram.
+			if len(island_data[child_id]) > 2:
+				return None  # Bad tag.
+			# We should also check here that the child has no children, but...
+		# The two grand children in first region define a direction to search for the third region.
+		grandchildren_ids = list(island_data[first_region_id])
+		grandchild_a_id = grandchildren_ids[0]
+		grandchild_b_id = grandchildren_ids[1]
+		grandchild_a_center = island_data[grandchild_a_id].center
+		grandchild_b_center = island_data[grandchild_b_id].center
+
+		# START HERE
 
 #
 # Image processing helpers:
@@ -104,7 +163,7 @@ def resize_linear(image_matrix, new_height:int, new_width:int):
 # Maths + Logic Helpers
 #
 
-def flood_fill_connected(mat):
+def flood_fill_connected(mat) -> Tuple[numpy.ndarray, list]:
 	"""Takes a black and white matrix with 0 as 'empty' and connect components with value==1.
 	Returns a tuple with two items:
 	 - int matrix with every pixel assigned to a unique class from 2 to n.
@@ -150,7 +209,7 @@ def flood_fill_connected(mat):
 # Workflow
 #
 
-def load_image(filename): # Out -> grey image matrix
+def load_image(filename) -> numpy.ndarray: # -> grey image matrix
 	"""
 	Load an image and convert it to a luminance matrix (float) of the given resolution,
 	crop to aspect ratio and normalize to 0/1.
@@ -167,7 +226,7 @@ def load_image(filename): # Out -> grey image matrix
 	dst /= dst.max() or 1.0
 	return dst
 
-def make_threshold_map(input_matrix):  # Out -> grey image matrix
+def make_threshold_map(input_matrix: numpy.typing.ArrayLike) -> numpy.ndarray:  # -> grey image matrix
 	"""This is basically just blur."""
 	# Downscale by four.
 	resized = fast_downscale(input_matrix, step=4)
@@ -176,14 +235,39 @@ def make_threshold_map(input_matrix):  # Out -> grey image matrix
 	threshold = resize_linear(blurred, input_matrix.shape[0], input_matrix.shape[1])
 	return threshold
 
-def binarize(image_matrix, threshold_map):  # Out -> Image
+def binarize(image_matrix: numpy.typing.ArrayLike, threshold_map: numpy.typing.ArrayLike) -> numpy.ndarray:
 	"""Return a matrix with 1/0"""
 	return (image_matrix >= threshold_map).astype(int)
 
-def topological_filter(binarized_image):
+def topological_filter(binarized_image: numpy.typing.ArrayLike) -> ():
 	"""Given the binarized image data, return """
 	island_matrix, island_data = flood_fill_connected(binarized_image)
-	# We have a bunch of unconnected (flat) island data
+
+	# We have a bunch of unconnected (flat) island data.
+	# Our data structure is built left-to-right because it's faster to access memory in that order,
+	# but this means our rectangles are probably in the wrong order.
+	# We have to sort them or iterate over them in them top-to-bottom, but this leaves more in the 'open set'.
+	# Or...
+
+	# TODO: There's a stupid O(n^2) and then there's a REALLY stupid _this_.
+	# Iterate over the island_matrix and get the pairs of touching components, then build the hierarchy from that.
+	touching_pairs = set()
+	for y in range(island_matrix.shape[0]-1):
+		for x in range(island_matrix.shape[1]-1):
+			v = island_matrix[y,x]
+			vdx = island_matrix[y,x+1]
+			vdy = island_matrix[y+1, x]
+			if v != vdx:
+				touching_pairs.add(min(vdx, v), max(vdx, v))
+			if v != vdy:
+				touching_pairs.add(min(vdy, v), max(vdy, v))
+
+	# Now go over all pairs and, if one is a child of another, add it.
+	for a,b in touching_pairs:
+		if island_data[a] in island_data[b]:
+			island_data[b].children.add(a)
+		if island_data[b] in island_data[a]:
+			island_data[a].children.add(b)
 
 def error_correct(filtered_image):
 	pass
