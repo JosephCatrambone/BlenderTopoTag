@@ -1,10 +1,48 @@
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
-# Press the green button in the gutter to run the script.
+"""
+TopoTag Blender
+A plugin to extract topotags from video footage in Blender.
+(c) Joseph Catrambone 2021 -- Published under MIT License.
+"""
 
 import math
 import numpy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+@dataclass
+class TopoTag:
+	tag_id: int  # The computed ID of the tag.
+	island_id: int  # The raw connected component image has this ID.
+	vertex_positions: list  # A list of tuples of x,y, NOT y,x.
+	pose: list
+
+@dataclass
+class IslandBounds:
+	id: int = -1
+	num_pixels: int = 0
+	children: list = field(default_factory=list)
+	x_min: int = 0
+	y_min: int = 0
+	x_max: int = 0
+	y_max: int = 0
+
+	def contains(self, other) -> bool:
+		"""Returns True if other (an IslandBounds instance) is entirely inside this."""
+		if other.x_min <= self.x_min:
+			return False
+		if other.x_max >= self.x_max:
+			return False
+		if other.y_min <= self.y_min:
+			return False
+		if other.y_max >= self.y_max:
+			return False
+		return True
+
+	def update_from_coordinate(self, x: int, y: int):
+		self.num_pixels += 1
+		self.x_min = min(self.x_min, x)
+		self.y_min = min(self.y_min, y)
+		self.x_max = max(self.x_max, x)
+		self.y_max = max(self.y_max, y)
 
 #
 # Image processing helpers:
@@ -66,36 +104,8 @@ def resize_linear(image_matrix, new_height:int, new_width:int):
 # Maths + Logic Helpers
 #
 
-@dataclass
-class IslandBounds:
-	id: int = -1
-	num_pixels: int = 0
-	x_min: int = 0
-	y_min: int = 0
-	x_max: int = 0
-	y_max: int = 0
-
-	def contains(self, other) -> bool:
-		"""Returns True if other (an IslandBounds instance) is entirely inside this."""
-		if other.x_min <= self.x_min:
-			return False
-		if other.x_max >= self.x_max:
-			return False
-		if other.y_min <= self.y_min:
-			return False
-		if other.y_max >= self.y_max:
-			return False
-		return True
-
-	def update_from_coordinate(self, x: int, y: int):
-		self.num_pixels += 1
-		self.x_min = min(self.x_min, x)
-		self.y_min = min(self.y_min, y)
-		self.x_max = max(self.x_max, x)
-		self.y_max = max(self.y_max, y)
-
-def flood_fill_connected(mat, untagged_class: int = 1):
-	"""Takes a black and white matrix with 0 as 'empty' and connect components with value==untagged_class (default: 1).
+def flood_fill_connected(mat):
+	"""Takes a black and white matrix with 0 as 'empty' and connect components with value==1.
 	Returns a tuple with two items:
 	 - int matrix with every pixel assigned to a unique class from 2 to n.
 	 - A list of length(n+2) where class_n is the position of the bounds information in the list.
@@ -108,32 +118,32 @@ def flood_fill_connected(mat, untagged_class: int = 1):
 		...
 	"""
 	island_bounds = list()
-	island_bounds.push(IslandBounds())  # Class 0 -> Nothing.
-	island_bounds.push(IslandBounds())  # Class 1 -> Nothing.
+	island_bounds.append(IslandBounds())  # Class 0 -> Nothing.
+	island_bounds.append(IslandBounds())  # Class 1 -> Nothing.
 	neighborhood = [(-1, 0), (+1, 0), (0, -1), (0, +1)]
 	islands = (mat > 0.0).astype(numpy.int)
-	# 0 = not a thing.
-	# 1 = unlabeled.
-	# 2... = unique ID
+
 	latest_id = 2
-	for y in range(0, islands.shape[0]):
-		for x in range(0, islands.shape[1]):
-			if islands[y, x] == untagged_class:
-				new_island = IslandBounds(id=latest_id, x_min=x, y_min=y, x_max=x, y_max=y)
-				# We have a region heretofore undiscovered.
-				pending = [(y, x)]
-				while pending:
-					nbr_y, nbr_x = pending.pop()
-					if islands[nbr_y, nbr_x] == 1:
-						islands[nbr_y, nbr_x] = latest_id
-						new_island.update_from_coordinate(nbr_x, nbr_y)
-						for dy, dx in neighborhood:
-							if nbr_y+dy < 0 or nbr_x+dx < 0 or nbr_y+dy >= islands.shape[0] or nbr_x+dx >= islands.shape[1]:
-								continue
-							if islands[nbr_y+dy, nbr_x+dx] == 1:
-								pending.append((nbr_y+dy, nbr_x+dx))
-				latest_id += 1
-				island_bounds.append(new_island)
+	# First we tag all the positive white/1 islands, then we fill the black/0 empty spaces.
+	for untagged_class in [1, 0]: # THIS MUST BE 1, 0.
+		for y in range(0, islands.shape[0]):
+			for x in range(0, islands.shape[1]):
+				if islands[y, x] == untagged_class:
+					new_island = IslandBounds(id=latest_id, x_min=x, y_min=y, x_max=x, y_max=y)
+					# We have a region heretofore undiscovered.
+					pending = [(y, x)]
+					while pending:
+						nbr_y, nbr_x = pending.pop()
+						if islands[nbr_y, nbr_x] == untagged_class:
+							islands[nbr_y, nbr_x] = latest_id
+							new_island.update_from_coordinate(nbr_x, nbr_y)
+							for dy, dx in neighborhood:
+								if nbr_y+dy < 0 or nbr_x+dx < 0 or nbr_y+dy >= islands.shape[0] or nbr_x+dx >= islands.shape[1]:
+									continue
+								if islands[nbr_y+dy, nbr_x+dx] == untagged_class:
+									pending.append((nbr_y+dy, nbr_x+dx))
+					latest_id += 1
+					island_bounds.append(new_island)
 	return islands, island_bounds
 
 #
@@ -158,6 +168,7 @@ def load_image(filename): # Out -> grey image matrix
 	return dst
 
 def make_threshold_map(input_matrix):  # Out -> grey image matrix
+	"""This is basically just blur."""
 	# Downscale by four.
 	resized = fast_downscale(input_matrix, step=4)
 	# Average / blur pixels.
@@ -166,10 +177,13 @@ def make_threshold_map(input_matrix):  # Out -> grey image matrix
 	return threshold
 
 def binarize(image_matrix, threshold_map):  # Out -> Image
-	return 1.0 * (image_matrix >= threshold_map)
+	"""Return a matrix with 1/0"""
+	return (image_matrix >= threshold_map).astype(int)
 
 def topological_filter(binarized_image):
-	pass
+	"""Given the binarized image data, return """
+	island_matrix, island_data = flood_fill_connected(binarized_image)
+	# We have a bunch of unconnected (flat) island data
 
 def error_correct(filtered_image):
 	pass
@@ -179,6 +193,7 @@ def error_correct(filtered_image):
 #
 
 def get_animation_frame(idx):
+	"""Load video frame hack from S.O.  TODO: Credit author in title."""
 	import bpy
 
 	frameStart = 1
