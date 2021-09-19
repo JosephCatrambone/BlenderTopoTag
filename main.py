@@ -21,17 +21,20 @@ class IslandBounds:
 
 	def __contains__(self, other) -> bool:
 		"""Returns True if other (an IslandBounds instance) is entirely inside this."""
-		if not isinstance(other, IslandBounds):
-			raise TypeError("Other is not an instance of IslandBounds")
-		if other.x_min <= self.x_min:
-			return False
-		if other.x_max >= self.x_max:
-			return False
-		if other.y_min <= self.y_min:
-			return False
-		if other.y_max >= self.y_max:
-			return False
-		return True
+		if isinstance(other, IslandBounds):
+			if other.x_min <= self.x_min:
+				return False
+			if other.x_max >= self.x_max:
+				return False
+			if other.y_min <= self.y_min:
+				return False
+			if other.y_max >= self.y_max:
+				return False
+			return True
+		elif isinstance(other, (int, int)):
+			return other[0] > self.x_min and other[0] < self.x_max and other[1] > self.y_min and other[1] < self.y_max
+		else:
+			raise TypeError("Other is not an instance of IslandBounds or a tuple of pixel values")
 
 	def update_from_coordinate(self, x: int, y: int):
 		self.num_pixels += 1
@@ -40,10 +43,13 @@ class IslandBounds:
 		self.x_max = max(self.x_max, x)
 		self.y_max = max(self.y_max, y)
 
-	@property
 	def center(self) -> Tuple[int, int]:
 		"""Returns the x,y coordinate of the unweighted center of this rectangle."""
 		return (self.x_max+self.x_min)//2, (self.y_max+self.y_min//2)
+
+	def max_edge_length(self) -> int:
+		"""Return the length of the maximum edge."""
+		return max(self.y_max-self.y_min, self.x_max-self.x_min)
 
 @dataclass
 class TopoTag:
@@ -57,6 +63,8 @@ class TopoTag:
 	def from_island_data(island_id, island_data: list, island_matrix: numpy.typing.ArrayLike) -> Optional:
 		"""Given the ID of an island to decode, the list of all island data, and the matrix of connected components,
 		attempt to decode the island with the given ID into a TopoTag.  Will return a TopoTag or None."""
+
+		# TODO: This should filter pixels which are less than a certain amount of the baseline area.
 
 		# The first pixel of each region is labeled with a capital letter.
 		# island_id in this case will be 'A' (though it's actually an int)
@@ -94,14 +102,59 @@ class TopoTag:
 			if len(island_data[child_id]) > 2:
 				return None  # Bad tag.
 			# We should also check here that the child has no children, but...
-		# The two grand children in first region define a direction to search for the third region.
-		grandchildren_ids = list(island_data[first_region_id])
-		grandchild_a_id = grandchildren_ids[0]
-		grandchild_b_id = grandchildren_ids[1]
-		grandchild_a_center = island_data[grandchild_a_id].center
-		grandchild_b_center = island_data[grandchild_b_id].center
 
-		# START HERE
+		# Find third region.  (E in our diagram above.)
+		# The two grand children in first region (C & D) define a direction to search for the third region.
+		grandchildren_ids = list(island_data[first_region_id])
+		grandchild_c_id = grandchildren_ids[0]
+		grandchild_d_id = grandchildren_ids[1]
+		grandchild_c_center = island_data[grandchild_c_id].center()
+		grandchild_d_center = island_data[grandchild_d_id].center()
+		# The third region is the farthest away from c&d that's still inside AND on the line defined by c&d.
+		# Any child of this region is, by definition, inside, so we need only to verify the pixels are on the line.
+		dx, dy = grandchild_d_center[0] - grandchild_c_center[0], grandchild_d_center[1] - grandchild_c_center[1]
+		# This is a dumb and lazy way to do it, but we can step away in multiples of this dxdy to get the other region.
+		# Keep in mind that this marker _isn't_ perspective aligned at this point so we can't make any assumptions.
+		max_steps = island_data[island_id].max_edge_length() / min(dy, dx)
+		max_step_in_child = 0
+		third_region_id = None
+		for step in range(-max_steps, max_steps):
+			# We can use the c or d center arbitrarily right now.
+			xy = (grandchild_c_center[0] + dx*step, grandchild_c_center[1] + dy*step)
+			#if x < 0 or x > island_matrix.shape[1] or y < 0 or y > island_matrix.shape[0]:
+			if xy in island_data[island_id]:
+				for child_id in island_data[island_id].children:
+					if xy in island_data[child_id] and abs(step) > max_step_in_child:
+						max_step_in_child = abs(step)
+						third_region_id = child_id
+		third_region_center = island_data[third_region_id].center()
+
+		# Now we actually can pick the true 'first' region in the paper.  Region B in our diagram.
+		# Pick whichever (c or d) is farther from third_region.
+		second_region_id = grandchild_c_id
+		second_region_center = grandchild_c_center
+		if abs(grandchild_d_center[0]-third_region_center[0])+abs(grandchild_d_center[1]-third_region_center[1]) > abs(grandchild_c_center[0]-third_region_center[0])+abs(grandchild_c_center[1]-third_region_center[1]):
+			second_region_id = grandchild_d_id
+			second_region_center = grandchild_d_center
+
+		# Now that we have region 2 and 3, use that to find 4.
+		dx, dy = third_region_center[0] - second_region_center[0], third_region_center[1] - second_region_center[1]
+		# We can 'rotate' the line 90 degrees by setting x' = -y and y = x.
+		forth_region_center = (second_region_center[0] + -dy, second_region_center[1] + dx)
+		forth_region_id = None
+		for child_id in island_data[island_id].children:
+			if forth_region_center in island_data[child_id]:
+				forth_region_id = child_id
+				break
+		if not forth_region_id:
+			# Tragically, can't find 4th region?
+			return None
+
+		# TODO: More decoding here!
+
+		result = TopoTag(0, island_id, 0, [], [])
+		return result
+
 
 #
 # Image processing helpers:
@@ -239,8 +292,8 @@ def binarize(image_matrix: numpy.typing.ArrayLike, threshold_map: numpy.typing.A
 	"""Return a matrix with 1/0"""
 	return (image_matrix >= threshold_map).astype(int)
 
-def topological_filter(binarized_image: numpy.typing.ArrayLike) -> ():
-	"""Given the binarized image data, return """
+def find_tags(binarized_image: numpy.typing.ArrayLike) -> (list, list, numpy.ndarray):
+	"""Given the binarized image data, return a tuple of the topotags, the island data, the connected component matrix."""
 	island_matrix, island_data = flood_fill_connected(binarized_image)
 
 	# We have a bunch of unconnected (flat) island data.
@@ -269,8 +322,12 @@ def topological_filter(binarized_image: numpy.typing.ArrayLike) -> ():
 		if island_data[b] in island_data[a]:
 			island_data[a].children.add(b)
 
-def error_correct(filtered_image):
-	pass
+	topo_tags = list()
+	for island_id in range(2, len(island_data)):
+		tag = TopoTag.from_island_data(island_id, island_data, island_matrix)
+		if tag:
+			topo_tags.append(tag)
+	return topo_tags, island_data, island_matrix
 
 #
 # Blender interface:
@@ -347,9 +404,8 @@ def main():
 	threshold = make_threshold_map(img_mat)
 	print("Binarizing...")
 	binarized = binarize(img_mat, threshold)
-	print("Selecting islands and connected components...")
-	island_pixels, island_data = flood_fill_connected(binarized)
-	print("Topo filtering")
+	print("Finding tags...")
+	tags, island_pixels, island_data = find_tags(binarized)
 
 
 #if __name__ == '__main__':
