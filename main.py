@@ -6,8 +6,11 @@ A plugin to extract topotags from video footage in Blender.
 
 import math
 import numpy
+import sys
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Any, NewType, Optional, Tuple, Type
+
+Matrix = NewType('Matrix', numpy.ndarray)
 
 @dataclass
 class IslandBounds:
@@ -31,10 +34,9 @@ class IslandBounds:
 			if other.y_max >= self.y_max:
 				return False
 			return True
-		elif isinstance(other, (int, int)):
-			return other[0] > self.x_min and other[0] < self.x_max and other[1] > self.y_min and other[1] < self.y_max
 		else:
-			raise TypeError("Other is not an instance of IslandBounds or a tuple of pixel values")
+			assert len(other) == 2
+			return other[0] > self.x_min and other[0] < self.x_max and other[1] > self.y_min and other[1] < self.y_max
 
 	def update_from_coordinate(self, x: int, y: int):
 		self.num_pixels += 1
@@ -60,11 +62,15 @@ class TopoTag:
 	pose: list
 
 	@staticmethod
-	def from_island_data(island_id, island_data: list, island_matrix: numpy.typing.ArrayLike) -> Optional:
+	def from_island_data(island_id, island_data: list, island_matrix: Matrix) -> Optional:
 		"""Given the ID of an island to decode, the list of all island data, and the matrix of connected components,
 		attempt to decode the island with the given ID into a TopoTag.  Will return a TopoTag or None."""
 
 		# TODO: This should filter pixels which are less than a certain amount of the baseline area.
+
+		# Quick reject regions too small:
+		if island_data[island_id].num_pixels < 10*10:
+			return None
 
 		# The first pixel of each region is labeled with a capital letter.
 		# island_id in this case will be 'A' (though it's actually an int)
@@ -99,13 +105,16 @@ class TopoTag:
 					return None
 				first_region_id = child_id  # Otherwise, valid candidate.
 			# A child node other than the first can have one or zero children. E, G, or H in our diagram.
-			if len(island_data[child_id]) > 2:
+			if len(island_data[child_id].children) > 2:
 				return None  # Bad tag.
 			# We should also check here that the child has no children, but...
+		if first_region_id is None:
+			# No region detected -- not a valid tag.
+			return None
 
 		# Find third region.  (E in our diagram above.)
 		# The two grand children in first region (C & D) define a direction to search for the third region.
-		grandchildren_ids = list(island_data[first_region_id])
+		grandchildren_ids = list(island_data[first_region_id].children)
 		grandchild_c_id = grandchildren_ids[0]
 		grandchild_d_id = grandchildren_ids[1]
 		grandchild_c_center = island_data[grandchild_c_id].center()
@@ -115,7 +124,7 @@ class TopoTag:
 		dx, dy = grandchild_d_center[0] - grandchild_c_center[0], grandchild_d_center[1] - grandchild_c_center[1]
 		# This is a dumb and lazy way to do it, but we can step away in multiples of this dxdy to get the other region.
 		# Keep in mind that this marker _isn't_ perspective aligned at this point so we can't make any assumptions.
-		max_steps = island_data[island_id].max_edge_length() / min(dy, dx)
+		max_steps = island_data[island_id].max_edge_length() // max(1, min(dy, dx))
 		max_step_in_child = 0
 		third_region_id = None
 		for step in range(-max_steps, max_steps):
@@ -127,6 +136,8 @@ class TopoTag:
 					if xy in island_data[child_id] and abs(step) > max_step_in_child:
 						max_step_in_child = abs(step)
 						third_region_id = child_id
+		if third_region_id is None:
+			return None
 		third_region_center = island_data[third_region_id].center()
 
 		# Now we actually can pick the true 'first' region in the paper.  Region B in our diagram.
@@ -216,7 +227,7 @@ def resize_linear(image_matrix, new_height:int, new_width:int):
 # Maths + Logic Helpers
 #
 
-def flood_fill_connected(mat) -> Tuple[numpy.ndarray, list]:
+def flood_fill_connected(mat) -> Tuple[Matrix, list]:
 	"""Takes a black and white matrix with 0 as 'empty' and connect components with value==1.
 	Returns a tuple with two items:
 	 - int matrix with every pixel assigned to a unique class from 2 to n.
@@ -256,13 +267,13 @@ def flood_fill_connected(mat) -> Tuple[numpy.ndarray, list]:
 									pending.append((nbr_y+dy, nbr_x+dx))
 					latest_id += 1
 					island_bounds.append(new_island)
-	return islands, island_bounds
+	return island_bounds, islands
 
 #
 # Workflow
 #
 
-def load_image(filename) -> numpy.ndarray: # -> grey image matrix
+def load_image(filename) -> Matrix: # -> grey image matrix
 	"""
 	Load an image and convert it to a luminance matrix (float) of the given resolution,
 	crop to aspect ratio and normalize to 0/1.
@@ -279,7 +290,7 @@ def load_image(filename) -> numpy.ndarray: # -> grey image matrix
 	dst /= dst.max() or 1.0
 	return dst
 
-def make_threshold_map(input_matrix: numpy.typing.ArrayLike) -> numpy.ndarray:  # -> grey image matrix
+def make_threshold_map(input_matrix: Matrix) -> Matrix:  # -> grey image matrix
 	"""This is basically just blur."""
 	# Downscale by four.
 	resized = fast_downscale(input_matrix, step=4)
@@ -288,13 +299,13 @@ def make_threshold_map(input_matrix: numpy.typing.ArrayLike) -> numpy.ndarray:  
 	threshold = resize_linear(blurred, input_matrix.shape[0], input_matrix.shape[1])
 	return threshold
 
-def binarize(image_matrix: numpy.typing.ArrayLike, threshold_map: numpy.typing.ArrayLike) -> numpy.ndarray:
+def binarize(image_matrix: Matrix, threshold_map: Matrix) -> Matrix:
 	"""Return a matrix with 1/0"""
 	return (image_matrix >= threshold_map).astype(int)
 
-def find_tags(binarized_image: numpy.typing.ArrayLike) -> (list, list, numpy.ndarray):
+def find_tags(binarized_image: Matrix) -> (list, list, Matrix):
 	"""Given the binarized image data, return a tuple of the topotags, the island data, the connected component matrix."""
-	island_matrix, island_data = flood_fill_connected(binarized_image)
+	island_data, island_matrix = flood_fill_connected(binarized_image)
 
 	# We have a bunch of unconnected (flat) island data.
 	# Our data structure is built left-to-right because it's faster to access memory in that order,
@@ -311,9 +322,9 @@ def find_tags(binarized_image: numpy.typing.ArrayLike) -> (list, list, numpy.nda
 			vdx = island_matrix[y,x+1]
 			vdy = island_matrix[y+1, x]
 			if v != vdx:
-				touching_pairs.add(min(vdx, v), max(vdx, v))
+				touching_pairs.add((min(vdx, v), max(vdx, v)))
 			if v != vdy:
-				touching_pairs.add(min(vdy, v), max(vdy, v))
+				touching_pairs.add((min(vdy, v), max(vdy, v)))
 
 	# Now go over all pairs and, if one is a child of another, add it.
 	for a,b in touching_pairs:
@@ -384,7 +395,7 @@ def debug_show(mat):
 	img = Image.fromarray(mat*255.0)
 	img.show()
 
-def debug_show_islands(classes):
+def debug_show_islands(classes, show=True):
 	from PIL import Image
 	import itertools
 	num_classes = classes.max()
@@ -394,19 +405,34 @@ def debug_show_islands(classes):
 	for y in range(classes.shape[0]):
 		for x in range(classes.shape[1]):
 			colored_image.putpixel((x,y), class_colors[classes[y,x]])
-	colored_image.show()
+	if show:
+		colored_image.show()
 	return colored_image
 
-def main():
+def debug_show_tags(tags, island_data, island_matrix, show=True):
+	from PIL import Image, ImageDraw
+	# Render a color image for the island_matrix.
+	img = debug_show_islands(island_matrix, show=False)
+	canvas = ImageDraw.Draw(img)
+	# Draw a pink border for each tag.
+	for tag in tags:
+		island_id = tag.island_id
+		canvas.rectangle((island_data[island_id].x_min, island_data[island_id].y_min, island_data[island_id].x_max, island_data[island_id].y_max), fill=(255, 0, 255))
+	if show:
+		img.show()
+	return img
+
+def main(image_filename: str):
 	print("Loading image...")
-	img_mat = load_image("test_00.png")
+	img_mat = load_image(image_filename)
 	print("Making threshold map...")
 	threshold = make_threshold_map(img_mat)
 	print("Binarizing...")
 	binarized = binarize(img_mat, threshold)
+	debug_show(binarized)
 	print("Finding tags...")
-	tags, island_pixels, island_data = find_tags(binarized)
-
+	tags, island_data, island_pixels = find_tags(binarized)
+	debug_show_tags(tags, island_data, island_pixels)
 
 #if __name__ == '__main__':
-#	main()
+#	main(sys.argv[1])
