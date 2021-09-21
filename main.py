@@ -39,19 +39,34 @@ class IslandBounds:
 			return other[0] > self.x_min and other[0] < self.x_max and other[1] > self.y_min and other[1] < self.y_max
 
 	def update_from_coordinate(self, x: int, y: int):
+		if self.num_pixels == 0:
+			self.x_min = x
+			self.y_min = y
+			self.x_max = x
+			self.y_max = y
 		self.num_pixels += 1
 		self.x_min = min(self.x_min, x)
 		self.y_min = min(self.y_min, y)
 		self.x_max = max(self.x_max, x)
 		self.y_max = max(self.y_max, y)
 
-	def center(self) -> Tuple[int, int]:
+	def center(self) -> Tuple[float, float]:
 		"""Returns the x,y coordinate of the unweighted center of this rectangle."""
-		return (self.x_max+self.x_min)//2, (self.y_max+self.y_min//2)
+		return (self.x_max+self.x_min)/2, (self.y_max+self.y_min)/2
+
+	def pixel_center(self) -> Tuple[int, int]:
+		"""Returns the x,y coordinate of the unweighted center-most pixel of this rectangle."""
+		return (self.x_max+self.x_min)//2, (self.y_max+self.y_min)//2
 
 	def max_edge_length(self) -> int:
 		"""Return the length of the maximum edge."""
 		return max(self.y_max-self.y_min, self.x_max-self.x_min)
+
+	def width(self) -> int:
+		return self.x_max - self.x_min
+
+	def height(self) -> int:
+		return self.y_max - self.y_min
 
 @dataclass
 class TopoTag:
@@ -62,14 +77,15 @@ class TopoTag:
 	pose: list
 
 	@staticmethod
-	def from_island_data(island_id, island_data: list, island_matrix: Matrix) -> Optional:
+	def from_island_data(island_id, island_data: list) -> Optional:
 		"""Given the ID of an island to decode, the list of all island data, and the matrix of connected components,
 		attempt to decode the island with the given ID into a TopoTag.  Will return a TopoTag or None."""
 
 		# TODO: This should filter pixels which are less than a certain amount of the baseline area.
 
 		# Quick reject regions too small:
-		if island_data[island_id].num_pixels < 10*10:
+		if island_data[island_id].num_pixels < 10*10 or island_data[island_id].width() < 16 or island_data[island_id].height() < 16:
+			print("Region too small.")
 			return None
 
 		# The first pixel of each region is labeled with a capital letter.
@@ -96,74 +112,66 @@ class TopoTag:
 		# - Find the 'first' region -- the one with exactly two children.
 		# - While we're at it, make sure that none of the child regions have a depth of more than one.
 		#   Each child needs exactly one or zero children.
-		first_region_id = None
+		baseline_region_id = None
 		for child_id in island_data[island_id].children:  # Should be n^2 children...
 			if len(island_data[child_id].children) == 2:  # This black region, if it's the first, needs two children.
 				# This corresponds to 'B' in our diagram above.
-				if first_region_id is not None:
+				if baseline_region_id is not None:
 					# We already found a first region, so this means there's more than one and this is not a valid tag.
 					return None
-				first_region_id = child_id  # Otherwise, valid candidate.
+				baseline_region_id = child_id  # Otherwise, valid candidate.
 			# A child node other than the first can have one or zero children. E, G, or H in our diagram.
 			if len(island_data[child_id].children) > 2:
 				return None  # Bad tag.
 			# We should also check here that the child has no children, but...
-		if first_region_id is None:
+		if baseline_region_id is None:
+			print("No 1st region found")
 			# No region detected -- not a valid tag.
 			return None
+		print("!! Found first region")
 
 		# Find third region.  (E in our diagram above.)
 		# The two grand children in first region (C & D) define a direction to search for the third region.
-		grandchildren_ids = list(island_data[first_region_id].children)
-		grandchild_c_id = grandchildren_ids[0]
-		grandchild_d_id = grandchildren_ids[1]
-		grandchild_c_center = island_data[grandchild_c_id].center()
-		grandchild_d_center = island_data[grandchild_d_id].center()
-		# The third region is the farthest away from c&d that's still inside AND on the line defined by c&d.
+		grandchildren_ids = list(island_data[baseline_region_id].children)
+		first_region_id = grandchildren_ids[0]
+		second_region_id = grandchildren_ids[1]
+		first_region_center = island_data[first_region_id].center()
+		second_region_center = island_data[second_region_id].center()
+		# The third region is the farthest away from 1&2 that's still inside AND on the line defined by 1-2.
 		# Any child of this region is, by definition, inside, so we need only to verify the pixels are on the line.
-		dx, dy = grandchild_d_center[0] - grandchild_c_center[0], grandchild_d_center[1] - grandchild_c_center[1]
-		# This is a dumb and lazy way to do it, but we can step away in multiples of this dxdy to get the other region.
-		# Keep in mind that this marker _isn't_ perspective aligned at this point so we can't make any assumptions.
-		max_steps = island_data[island_id].max_edge_length() // max(1, min(dy, dx))
-		max_step_in_child = 0
-		third_region_id = None
-		for step in range(-max_steps, max_steps):
-			# We can use the c or d center arbitrarily right now.
-			xy = (grandchild_c_center[0] + dx*step, grandchild_c_center[1] + dy*step)
-			#if x < 0 or x > island_matrix.shape[1] or y < 0 or y > island_matrix.shape[0]:
-			if xy in island_data[island_id]:
-				for child_id in island_data[island_id].children:
-					if xy in island_data[child_id] and abs(step) > max_step_in_child:
-						max_step_in_child = abs(step)
-						third_region_id = child_id
-		if third_region_id is None:
+		dx, dy = second_region_center[0] - first_region_center[0], second_region_center[1] - first_region_center[1]
+		baseline_horizontal_regions = find_regions_along_line(first_region_center, (dx, dy), island_id, island_data)
+		if len(baseline_horizontal_regions) == 0:
+			print("No 3rd region found")
 			return None
+		third_region_id = baseline_horizontal_regions[-1]
 		third_region_center = island_data[third_region_id].center()
+		print("!! Candidate third region")
 
 		# Now we actually can pick the true 'first' region in the paper.  Region B in our diagram.
-		# Pick whichever (c or d) is farther from third_region.
-		second_region_id = grandchild_c_id
-		second_region_center = grandchild_c_center
-		if abs(grandchild_d_center[0]-third_region_center[0])+abs(grandchild_d_center[1]-third_region_center[1]) > abs(grandchild_c_center[0]-third_region_center[0])+abs(grandchild_c_center[1]-third_region_center[1]):
-			second_region_id = grandchild_d_id
-			second_region_center = grandchild_d_center
+		# If region two is farther region three than region one, swap one and two.
+		if (abs(second_region_center[0]-third_region_center[0])+abs(second_region_center[1]-third_region_center[1])) > (abs(first_region_center[0]-third_region_center[0])+abs(first_region_center[1]-third_region_center[1])):
+			first_region_id, second_region_id = second_region_id, first_region_id
+			first_region_center, second_region_center = second_region_center, first_region_center
 
 		# Now that we have region 2 and 3, use that to find 4.
-		dx, dy = third_region_center[0] - second_region_center[0], third_region_center[1] - second_region_center[1]
+		dx, dy = third_region_center[0] - first_region_center[0], third_region_center[1] - first_region_center[1]
 		# We can 'rotate' the line 90 degrees by setting x' = -y and y = x.
-		forth_region_center = (second_region_center[0] + -dy, second_region_center[1] + dx)
-		forth_region_id = None
-		for child_id in island_data[island_id].children:
-			if forth_region_center in island_data[child_id]:
-				forth_region_id = child_id
-				break
-		if not forth_region_id:
-			# Tragically, can't find 4th region?
+		dx, dy = -dy, dx
+		baseline_vertical_regions = find_regions_along_line(first_region_center, (dx, dy), island_id, island_data)
+		if len(baseline_vertical_regions) == 0:
+			print("Can't find 4th region")
 			return None
+		forth_region_id = baseline_vertical_regions[-1]
+		forth_region_center = island_data[forth_region_id].center()
 
-		# TODO: More decoding here!
+		# Finally, decode our tag and get the vertex positions.
+		all_region_ids = [first_region_id, second_region_id, third_region_id, forth_region_id, ]
+		#for rid in baseline_horizontal_regions:
+		#	if rid != baseline_region_id and rid != third_region_id and rid not in island_data[baseline_region_id].children:
+		#		all_region_ids.append(rid)
 
-		result = TopoTag(0, island_id, 0, [], [])
+		result = TopoTag(0, island_id, 0, [first_region_center, second_region_center, third_region_center, forth_region_center], [])
 		return result
 
 
@@ -226,6 +234,25 @@ def resize_linear(image_matrix, new_height:int, new_width:int):
 #
 # Maths + Logic Helpers
 #
+
+def find_regions_along_line(origin: Tuple[float, float], dxdy: Tuple[float, float], island_id:int, island_data:list) -> list:
+	"""Returns a list of the region IDs on the given line inside the island.  Sorted by increasing distance from origin."""
+	# This is a dumb and lazy way to do it, but we can move along the simplified line defined by dx/dy.
+	dx = dxdy[0] / max(dxdy)
+	dy = dxdy[1] / max(dxdy)
+	print(f"Searching from {origin[0],origin[1]} along line {dx},{dy}")
+	# Keep in mind that this marker _isn't_ perspective aligned at this point so we can't make any assumptions.
+	max_steps = island_data[island_id].max_edge_length()
+	regions_on_line = set()
+	for step in range(-max_steps, max_steps):
+		xy = (origin[0] + (dx * step), origin[1] + (dy * step))
+		# if x < 0 or x > island_matrix.shape[1] or y < 0 or y > island_matrix.shape[0]:
+		if xy in island_data[island_id]:
+			for child_id in island_data[island_id].children:
+				if xy in island_data[child_id]:
+					regions_on_line.add(child_id)
+	# Convert the set to a list and sort:
+	return sorted(regions_on_line, key=lambda pt: abs(island_data[pt].center()[0]-origin[0])+abs(island_data[pt].center()[1]-origin[1]))
 
 def flood_fill_connected(mat) -> Tuple[Matrix, list]:
 	"""Takes a black and white matrix with 0 as 'empty' and connect components with value==1.
@@ -299,8 +326,10 @@ def make_threshold_map(input_matrix: Matrix) -> Matrix:  # -> grey image matrix
 	threshold = resize_linear(blurred, input_matrix.shape[0], input_matrix.shape[1])
 	return threshold
 
-def binarize(image_matrix: Matrix, threshold_map: Matrix) -> Matrix:
-	"""Return a matrix with 1/0"""
+def binarize(image_matrix: Matrix) -> Matrix:
+	"""Return a binary integer matrix with ones and zeros."""
+	# Should we just combine this with the make_threshold_map function?
+	threshold_map = make_threshold_map(image_matrix)
 	return (image_matrix >= threshold_map).astype(int)
 
 def find_tags(binarized_image: Matrix) -> (list, list, Matrix):
@@ -318,8 +347,8 @@ def find_tags(binarized_image: Matrix) -> (list, list, Matrix):
 	touching_pairs = set()
 	for y in range(island_matrix.shape[0]-1):
 		for x in range(island_matrix.shape[1]-1):
-			v = island_matrix[y,x]
-			vdx = island_matrix[y,x+1]
+			v = island_matrix[y, x]
+			vdx = island_matrix[y, x+1]
 			vdy = island_matrix[y+1, x]
 			if v != vdx:
 				touching_pairs.add((min(vdx, v), max(vdx, v)))
@@ -335,7 +364,7 @@ def find_tags(binarized_image: Matrix) -> (list, list, Matrix):
 
 	topo_tags = list()
 	for island_id in range(2, len(island_data)):
-		tag = TopoTag.from_island_data(island_id, island_data, island_matrix)
+		tag = TopoTag.from_island_data(island_id, island_data)
 		if tag:
 			topo_tags.append(tag)
 	return topo_tags, island_data, island_matrix
@@ -414,10 +443,17 @@ def debug_show_tags(tags, island_data, island_matrix, show=True):
 	# Render a color image for the island_matrix.
 	img = debug_show_islands(island_matrix, show=False)
 	canvas = ImageDraw.Draw(img)
+	# Draw some red borders for candidate islands.
+	for island in island_data[2:]:
+		canvas.rectangle((island.x_min, island.y_min, island.x_max, island.y_max), outline=(255, 0, 0))
 	# Draw a pink border for each tag.
 	for tag in tags:
 		island_id = tag.island_id
-		canvas.rectangle((island_data[island_id].x_min, island_data[island_id].y_min, island_data[island_id].x_max, island_data[island_id].y_max), fill=(255, 0, 255))
+		canvas.text((island_data[island_id].x_min, island_data[island_id].y_min), f"Isl{island_id}", fill=(255, 255, 255))
+		canvas.rectangle((island_data[island_id].x_min, island_data[island_id].y_min, island_data[island_id].x_max, island_data[island_id].y_max), outline=(255, 0, 255))
+		canvas.line((tag.vertex_positions[0][0], tag.vertex_positions[0][1], tag.vertex_positions[2][0], tag.vertex_positions[2][1]), fill=(0, 255, 255))
+		canvas.line((tag.vertex_positions[0][0], tag.vertex_positions[0][1], tag.vertex_positions[3][0], tag.vertex_positions[3][1]), fill=(255, 255, 0))
+		canvas.line((tag.vertex_positions[0][0], tag.vertex_positions[0][1], tag.vertex_positions[1][0], tag.vertex_positions[1][1]), fill=(255, 255, 255))
 	if show:
 		img.show()
 	return img
@@ -425,14 +461,14 @@ def debug_show_tags(tags, island_data, island_matrix, show=True):
 def main(image_filename: str):
 	print("Loading image...")
 	img_mat = load_image(image_filename)
-	print("Making threshold map...")
-	threshold = make_threshold_map(img_mat)
 	print("Binarizing...")
-	binarized = binarize(img_mat, threshold)
-	debug_show(binarized)
+	binary_mat = binarize(img_mat)
 	print("Finding tags...")
-	tags, island_data, island_pixels = find_tags(binarized)
+	tags, island_data, island_pixels = find_tags(binary_mat)
+	print(tags)
 	debug_show_tags(tags, island_data, island_pixels)
+	for region in island_data:
+		print(region)
 
 #if __name__ == '__main__':
 #	main(sys.argv[1])
