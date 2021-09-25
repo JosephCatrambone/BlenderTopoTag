@@ -4,12 +4,14 @@ A plugin to extract topotags from video footage in Blender.
 (c) Joseph Catrambone 2021 -- Published under MIT License.
 """
 
+import logging
 import math
 import numpy
 import sys
 from dataclasses import dataclass, field
 from typing import Any, NewType, Optional, Tuple, Type
 
+logger = logging.getLogger(__file__)
 Matrix = NewType('Matrix', numpy.ndarray)
 
 @dataclass
@@ -85,7 +87,6 @@ class TopoTag:
 
 		# Quick reject regions too small:
 		if island_data[island_id].num_pixels < 10*10 or island_data[island_id].width() < 16 or island_data[island_id].height() < 16:
-			print("Region too small.")
 			return None
 
 		# The first pixel of each region is labeled with a capital letter.
@@ -125,10 +126,14 @@ class TopoTag:
 				return None  # Bad tag.
 			# We should also check here that the child has no children, but...
 		if baseline_region_id is None:
-			print("No 1st region found")
 			# No region detected -- not a valid tag.
 			return None
-		print("!! Found first region")
+
+		# For an added layer of sanity, the depth of this tree must be _at max_ 3.
+		for child_id in island_data[island_id].children:
+			for grandchild_id in island_data[child_id].children:
+				if len(island_data[grandchild_id].children) != 0:
+					return None
 
 		# Find third region.  (E in our diagram above.)
 		# The two grand children in first region (C & D) define a direction to search for the third region.
@@ -142,11 +147,11 @@ class TopoTag:
 		dx, dy = second_region_center[0] - first_region_center[0], second_region_center[1] - first_region_center[1]
 		baseline_horizontal_regions = find_regions_along_line(first_region_center, (dx, dy), island_id, island_data)
 		if len(baseline_horizontal_regions) == 0:
-			print("No 3rd region found")
+			# print("No 3rd region found")
 			return None
 		third_region_id = baseline_horizontal_regions[-1]
 		third_region_center = island_data[third_region_id].center()
-		print("!! Candidate third region")
+		baseline_horizontal_slope = (dx, dy)
 
 		# Now we actually can pick the true 'first' region in the paper.  Region B in our diagram.
 		# If region two is farther region three than region one, swap one and two.
@@ -160,18 +165,31 @@ class TopoTag:
 		dx, dy = -dy, dx
 		baseline_vertical_regions = find_regions_along_line(first_region_center, (dx, dy), island_id, island_data)
 		if len(baseline_vertical_regions) == 0:
-			print("Can't find 4th region")
+			# print("Can't find 4th region")
 			return None
 		forth_region_id = baseline_vertical_regions[-1]
 		forth_region_center = island_data[forth_region_id].center()
+		baseline_vertical_slope = (dx, dy)
 
 		# Finally, decode our tag and get the vertex positions.
-		all_region_ids = [first_region_id, second_region_id, third_region_id, forth_region_id, ]
-		#for rid in baseline_horizontal_regions:
-		#	if rid != baseline_region_id and rid != third_region_id and rid not in island_data[baseline_region_id].children:
-		#		all_region_ids.append(rid)
+		all_region_ids = {baseline_region_id, first_region_id, second_region_id, third_region_id, forth_region_id}
+		vertices = [first_region_center, second_region_center, third_region_center, forth_region_center]
+		# The corners are locked.  We can use our horizontal and vertical baselines to read 'left to right' the untouched islands.
+		for vertical_region in baseline_vertical_regions:  # Top to bottom.
+			for horizontal_region in find_regions_along_line(island_data[vertical_region].center(), baseline_horizontal_slope, island_id, island_data):
+				if horizontal_region in island_data[island_id].children and horizontal_region not in all_region_ids:
+					vertices.append(island_data[horizontal_region].center())
+					all_region_ids.add(horizontal_region)
+		# Decode the regions.
+		code = 0
+		for (bit_id, region) in enumerate(all_region_ids):
+			if bit_id == 0 or bit_id == 1:
+				continue
+			if len(island_data[region].children) > 0:
+				code |= 1
+			code = code << 1
 
-		result = TopoTag(0, island_id, 0, [first_region_center, second_region_center, third_region_center, forth_region_center], [])
+		result = TopoTag(code, island_id, int(math.sqrt(len(all_region_ids))), vertices, [])
 		return result
 
 
@@ -238,8 +256,8 @@ def resize_linear(image_matrix, new_height:int, new_width:int):
 def find_regions_along_line(origin: Tuple[float, float], dxdy: Tuple[float, float], island_id:int, island_data:list) -> list:
 	"""Returns a list of the region IDs on the given line inside the island.  Sorted by increasing distance from origin."""
 	# This is a dumb and lazy way to do it, but we can move along the simplified line defined by dx/dy.
-	dx = dxdy[0] / max(dxdy)
-	dy = dxdy[1] / max(dxdy)
+	dx = dxdy[0] / max(abs(dxdy[0]), abs(dxdy[1]))
+	dy = dxdy[1] / max(abs(dxdy[0]), abs(dxdy[1]))
 	print(f"Searching from {origin[0],origin[1]} along line {dx},{dy}")
 	# Keep in mind that this marker _isn't_ perspective aligned at this point so we can't make any assumptions.
 	max_steps = island_data[island_id].max_edge_length()
@@ -444,12 +462,14 @@ def debug_show_tags(tags, island_data, island_matrix, show=True):
 	img = debug_show_islands(island_matrix, show=False)
 	canvas = ImageDraw.Draw(img)
 	# Draw some red borders for candidate islands.
-	for island in island_data[2:]:
-		canvas.rectangle((island.x_min, island.y_min, island.x_max, island.y_max), outline=(255, 0, 0))
+	#for island in island_data[2:]:
+	#	canvas.rectangle((island.x_min, island.y_min, island.x_max, island.y_max), outline=(255, 0, 0))
 	# Draw a pink border for each tag.
 	for tag in tags:
 		island_id = tag.island_id
-		canvas.text((island_data[island_id].x_min, island_data[island_id].y_min), f"Isl{island_id}", fill=(255, 255, 255))
+		for vertex in tag.vertex_positions:
+			canvas.rectangle((vertex[0]-1, vertex[1]-1, vertex[0]+1, vertex[1]+1), outline=(255, 255, 255))
+		canvas.text((island_data[island_id].x_min, island_data[island_id].y_min), f"Isl{island_id} - Code{tag.tag_id}", fill=(255, 255, 255))
 		canvas.rectangle((island_data[island_id].x_min, island_data[island_id].y_min, island_data[island_id].x_max, island_data[island_id].y_max), outline=(255, 0, 255))
 		canvas.line((tag.vertex_positions[0][0], tag.vertex_positions[0][1], tag.vertex_positions[2][0], tag.vertex_positions[2][1]), fill=(0, 255, 255))
 		canvas.line((tag.vertex_positions[0][0], tag.vertex_positions[0][1], tag.vertex_positions[3][0], tag.vertex_positions[3][1]), fill=(255, 255, 0))
@@ -465,10 +485,9 @@ def main(image_filename: str):
 	binary_mat = binarize(img_mat)
 	print("Finding tags...")
 	tags, island_data, island_pixels = find_tags(binary_mat)
-	print(tags)
+	for t in tags:
+		print(t)
 	debug_show_tags(tags, island_data, island_pixels)
-	for region in island_data:
-		print(region)
 
 #if __name__ == '__main__':
 #	main(sys.argv[1])
