@@ -15,6 +15,30 @@ logger = logging.getLogger(__file__)
 Matrix = NewType('Matrix', numpy.ndarray)
 
 @dataclass
+class CameraIntrinsics:
+	focal_length_x: float
+	focal_length_y: float
+	skew: float
+	principal_point_x: int
+	principal_point_y: int
+
+	def to_matrix(self):
+		return numpy.asarray([
+			[self.focal_length_x,           self.skew, self.principal_point_x],
+			[                  0, self.focal_length_y, self.principal_point_y],
+			[                  0,                   0,                      1],
+		])
+
+@dataclass
+class CameraExtrinsics:
+	x_rotation: float
+	y_rotation: float
+	z_rotation: float
+	x_translation: float
+	y_translation: float
+	z_translation: float
+
+@dataclass
 class IslandBounds:
 	id: int = -1
 	num_pixels: int = 0
@@ -79,7 +103,86 @@ class TopoTag:
 	pose: list
 
 	@staticmethod
-	def from_island_data(island_id, island_data: list) -> Optional:
+	def generate_points(k: int) -> list:
+		"""Returns a list of k^2 coordinates with idx=0 being at 0,0 and (k,0) being at [scale_factor, 0.0].
+		Others match to the coordinates as read in the appropriate vertex order.
+		Vertices are ordered top-left, top-second-from-left, top-right, bottom-left, left-to-right on top,
+		top-to-bottom on left side, left-to-right-top-to-bottom in remaining locations.
+
+		TODO: There's a bug with this returning the points at a scale of 2/3rds.
+		TODO: There's also a bug where we generate the points in the wrong order.  It appears that while we decode the
+		items in a certain order (top-left two, top right, bottom left, top line, left line, left-right-top-down), the
+		numbering is actually still only left-to-right-top-to-bottom when we encode things.
+		"""
+		scale_factor = 1.0
+		spacing = scale_factor / float(k)
+		vertices = list()
+		# Special cases.
+		v0 = (0, 0)
+		v1 = (spacing/2.0, 0)
+		v2 = (spacing*(k-1), 0)
+		v3 = (0, spacing*(k-1))
+		vertices.extend([v0, v1, v2, v3])
+		# Row 0 has k items still, but we already made three.
+		for p in range(2, k-1):  # Again, we already made p0, p1, and p2.  We go up to k instead of k+1 because vert v2 is at that postion.
+			vertices.append((spacing*p, 0))
+		# Now do the first column for the next set of verts.
+		for p in range(1, k-1):  # We made v0 and v3 already, so move downward.
+			vertices.append((0, spacing*p))
+		# Fill in the final grid.
+		for py in range(1, k):
+			for px in range(1, k):
+				vertices.append((px*spacing, py*spacing))
+		print(vertices)
+		return vertices
+
+	@staticmethod
+	def generate_marker(k: int, code: int, width: int):
+		from PIL import Image, ImageDraw
+		# We iterate over points in reverse order, so we need to flip the bits in our code.
+		bits = list()
+		while code > 0:
+			if code & 0x1:
+				bits.append(1)
+			else:
+				bits.append(0)
+			code //= 2
+		bits.append(1)  # For the first two regions.
+		bits.append(1)
+		if len(bits) > k*k:
+			raise Exception(f"Marker with {k}*{k} bits needs {len(bits)} to store {code}")
+		bits = list(reversed(bits))
+
+		# Render a color image for the island_matrix.
+		img = Image.new('L', size=(width, width))
+		padding = width//(2*k)
+		work_area_width = width - (2*padding)
+		width_per_marker = work_area_width//k  # Reassign, after we remove our border padding.
+		pts = TopoTag.generate_points(k)
+		canvas = ImageDraw.Draw(img)
+		# Fill black, then inner-white to make the rect.
+		canvas.rectangle((0, 0, width, width), fill=0)
+		canvas.rectangle((padding//4, padding//4, width-(padding//4), width-(padding//4)), fill=255)
+		# Draw all the points.
+		for bit_id, p in enumerate(pts):
+			x = (p[0] * work_area_width)
+			y = (p[1] * work_area_width)
+			canvas.ellipse((
+				x-(width_per_marker//3)+padding, y-(width_per_marker//3)+padding,
+				x+(width_per_marker//3)+padding, y+(width_per_marker//3)+padding
+				), fill=0
+			)
+			if bit_id < len(bits) and bits[bit_id]:
+				canvas.ellipse((
+					x - (width_per_marker // 6) + padding, y - (width_per_marker // 6) + padding,
+					x + (width_per_marker // 6) + padding, y + (width_per_marker // 6) + padding
+					), fill=255
+				)
+				canvas.text((x+padding, y+padding), f"Bit {bit_id} {bits[bit_id]}", fill=120)
+		return img
+
+	@staticmethod
+	def from_island_data(island_id, island_data: list, marker_width_mm: Optional[float] = None) -> Optional:
 		"""Given the ID of an island to decode, the list of all island data, and the matrix of connected components,
 		attempt to decode the island with the given ID into a TopoTag.  Will return a TopoTag or None."""
 
@@ -88,6 +191,9 @@ class TopoTag:
 		# Quick reject regions too small:
 		if island_data[island_id].num_pixels < 10*10 or island_data[island_id].width() < 16 or island_data[island_id].height() < 16:
 			return None
+
+		if marker_width_mm is None:
+			marker_width_mm = 100.0
 
 		# The first pixel of each region is labeled with a capital letter.
 		# island_id in this case will be 'A' (though it's actually an int)
@@ -172,7 +278,7 @@ class TopoTag:
 		baseline_vertical_slope = (dx, dy)
 
 		# Finally, decode our tag and get the vertex positions.
-		all_region_ids = {baseline_region_id, first_region_id, second_region_id, third_region_id, forth_region_id}
+		all_region_ids = {baseline_region_id, first_region_id, second_region_id}
 		vertices = [first_region_center, second_region_center, third_region_center, forth_region_center]
 		# The corners are locked.  We can use our horizontal and vertical baselines to read 'left to right' the untouched islands.
 		for vertical_region in baseline_vertical_regions:  # Top to bottom.
@@ -183,13 +289,20 @@ class TopoTag:
 		# Decode the regions.
 		code = 0
 		for (bit_id, region) in enumerate(all_region_ids):
-			if bit_id == 0 or bit_id == 1:
+			if bit_id == 0 or bit_id == 1 or bit_id == 2:  # Skip baseline region, first region, and second.
 				continue
 			if len(island_data[region].children) > 0:
-				code |= 1
+				code += 1
 			code = code << 1
 
-		result = TopoTag(code, island_id, int(math.sqrt(len(all_region_ids))), vertices, [])
+		# Recover pose from marker positions.
+		# Start by computing the fake 'planar' case where we assume island 0 is at 0,0,0 in the world.
+		# Basically assume that the marker region 1 is at 0,0 and move right.
+		k_value = int(math.sqrt(len(all_region_ids)))
+		positions_2d = numpy.asarray(TopoTag.generate_points(k_value))
+		positions_3d = numpy.hstack([positions_2d, numpy.zeros(shape=(positions_2d.shape[0], 1))])
+
+		result = TopoTag(code, island_id, k_value, vertices, [])
 		return result
 
 
@@ -328,8 +441,12 @@ def load_image(filename) -> Matrix: # -> grey image matrix
 	This is a placeholder for the Blender version which will pull a frame from the video stream.
 	"""
 	from PIL import Image
-	img = Image.open(filename).convert('L')
-	dst = numpy.asarray(img, dtype=numpy.float32)
+	img = Image.open(filename)
+	return convert_image(img)
+
+def convert_image(img) -> Matrix:
+	"""Perform the required conversion and preprocessing on an image object."""
+	dst = numpy.asarray(img.convert('L'), dtype=numpy.float32)
 	# Normalize:
 	dst -= dst.min()
 	dst /= dst.max() or 1.0
@@ -341,14 +458,15 @@ def make_threshold_map(input_matrix: Matrix) -> Matrix:  # -> grey image matrix
 	resized = fast_downscale(input_matrix, step=4)
 	# Average / blur pixels.
 	blurred = blur(resized)
-	threshold = resize_linear(blurred, input_matrix.shape[0], input_matrix.shape[1])
+	threshold = resize_linear(blurred, input_matrix.shape[0], input_matrix.shape[1])*0.5
 	return threshold
 
 def binarize(image_matrix: Matrix) -> Matrix:
 	"""Return a binary integer matrix with ones and zeros."""
 	# Should we just combine this with the make_threshold_map function?
-	threshold_map = make_threshold_map(image_matrix)
-	return (image_matrix >= threshold_map).astype(int)
+	#threshold_map = make_threshold_map(image_matrix)
+	#return (image_matrix >= threshold_map).astype(int)
+	return (image_matrix > image_matrix.mean()+image_matrix.std()*0.5).astype(int)
 
 def find_tags(binarized_image: Matrix) -> (list, list, Matrix):
 	"""Given the binarized image data, return a tuple of the topotags, the island data, the connected component matrix."""
@@ -478,9 +596,12 @@ def debug_show_tags(tags, island_data, island_matrix, show=True):
 		img.show()
 	return img
 
-def main(image_filename: str):
+def main(image_filename: str = None, image = None):
 	print("Loading image...")
-	img_mat = load_image(image_filename)
+	if image_filename:
+		img_mat = load_image(image_filename)
+	elif image:
+		img_mat = convert_image(image)
 	print("Binarizing...")
 	binary_mat = binarize(img_mat)
 	print("Finding tags...")
