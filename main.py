@@ -15,6 +15,53 @@ logger = logging.getLogger(__file__)
 Matrix = NewType('Matrix', numpy.ndarray)
 
 @dataclass
+class RotationMatrix:
+	@classmethod
+	def to_euler(cls, r):
+		"""Return x, y, z such that this (R) = ZYX"""
+		x = math.atan2(r[2,1], r[2,2])
+		y = math.atan2(-r[2,0], math.sqrt(r[2,1]*r[2,1] + r[2,2]*r[2,2]))
+		z = math.atan2(r[1,0], r[0,0])
+		return (x, y, z)
+
+	@classmethod
+	def from_euler(cls, x: float, y: float, z:float):
+		x_rot = cls.from_x_rotation(x)
+		y_rot = cls.from_y_rotation(y)
+		z_rot = cls.from_z_rotation(z)
+		return z_rot @ y_rot @ x_rot
+
+	@classmethod
+	def from_x_rotation(cls, val: float):
+		c = math.cos(val)
+		s = math.sin(val)
+		return numpy.asarray([
+			[1, 0, 0],
+			[0, c, -s],
+			[0, s, c]
+		])
+
+	@classmethod
+	def from_y_rotation(cls, val: float):
+		c = math.cos(val)
+		s = math.sin(val)
+		return numpy.asarray([
+			[c, 0, s],
+			[0, 1, 0],
+			[-s, 0, c]
+		])
+
+	@classmethod
+	def from_z_rotation(cls, val: float):
+		c = math.cos(val)
+		s = math.sin(val)
+		return numpy.asarray([
+			[c, -s, 0],
+			[s, c, 0],
+			[0, 0, 1]
+		])
+
+@dataclass
 class CameraIntrinsics:
 	focal_length_x: float
 	focal_length_y: float
@@ -29,6 +76,16 @@ class CameraIntrinsics:
 			[                  0,                   0,                      1],
 		])
 
+	@classmethod
+	def from_beta_matrix(cls, b):
+		principal_point_y = (b[0,1]*b[0,2] - b[0,0]*b[1,2])/(b[0,0]*b[1,1]-b[0,1]*b[0,1])
+		scale = b[2,2] - (b[0,2]*b[0,2] + principal_point_y*(b[0,1]*b[0,2]-b[0,0]*b[1,2]))/b[0,0]
+		focal_length_x = math.sqrt(scale / b[0,0])
+		focal_length_y = math.sqrt(scale * b[0,0] / (b[0,0]*b[1,1] - b[0,1]*b[0,1]))
+		skew = -b[0,1]*focal_length_x*focal_length_x*focal_length_y/scale
+		principal_point_x = skew*principal_point_y/focal_length_y - b[0,2]*focal_length_x*focal_length_x/skew
+		return CameraIntrinsics(focal_length_x, focal_length_y, skew, principal_point_x, principal_point_y)
+
 @dataclass
 class CameraExtrinsics:
 	x_rotation: float
@@ -37,6 +94,48 @@ class CameraExtrinsics:
 	x_translation: float
 	y_translation: float
 	z_translation: float
+
+	def to_matrix(self):
+		return numpy.hstack([
+			RotationMatrix.from_euler(self.x_rotation, self.y_rotation, self.z_rotation),
+			numpy.asarray([[self.x_translation, self.y_translation, self.z_translation]]).T
+		])
+
+	@classmethod
+	def from_naive_dlt(cls, projection, world):
+		"""Compute the camera extrinsics from the projected image of the world coordinates."""
+		assert projection.shape[1] >= 2
+		assert world.shape[1] >= 3
+		# s * [u', v', 1].T = [R | t] * [x, y, z, 1].T
+		#
+		#   0  1  2  3  4  5  6  7    8     9     10   11
+		# | x  y  z  1  0  0  0  0  -u'x  -u'y  -u'z  -u' |  * [r11 r12 r13 tx r21 r22 r23 ty r31 r32 r33 tz].T = 0
+		# | 0  0  0  0  x  y  z  1  -v'x  -v'y  -v'z  -v' |
+		# Use SVD to find r|t.
+		homo_mat = numpy.zeros(shape=(projection.shape[0]*2, 12))
+		for i in range(projection.shape[0]):
+			homo_mat[(i * 2), 0] = world[i, 0]
+			homo_mat[(i * 2), 1] = world[i, 1]
+			homo_mat[(i * 2), 2] = world[i, 2]
+			homo_mat[(i * 2), 3] = 1
+
+			homo_mat[(i * 2), 8] = -projection[i,0]*world[i, 0]
+			homo_mat[(i * 2), 9] = -projection[i,0]*world[i, 1]
+			homo_mat[(i * 2), 10] = -projection[i,0]*world[i, 2]
+			homo_mat[(i * 2), 11] = -projection[i,0]
+
+			homo_mat[(i * 2)+1, 4] = world[i, 0]
+			homo_mat[(i * 2)+1, 5] = world[i, 1]
+			homo_mat[(i * 2)+1, 6] = world[i, 2]
+			homo_mat[(i * 2)+1, 7] = 1
+
+			homo_mat[(i * 2)+1, 8] = -projection[i, 1] * world[i, 0]
+			homo_mat[(i * 2)+1, 9] = -projection[i, 1] * world[i, 1]
+			homo_mat[(i * 2)+1, 10] = -projection[i, 1] * world[i, 2]
+			homo_mat[(i * 2)+1, 11] = -projection[i, 1]
+		# Given Ax=0, A is an overdetermined homogeneous solution, and the nontrivial solution is the smallest eigenvec.
+		_, _, v = numpy.linalg.svd(homo_mat, full_matrices=False)
+		return v[-1,:].reshape((3,4))
 
 @dataclass
 class IslandBounds:
@@ -100,40 +199,30 @@ class TopoTag:
 	island_id: int  # The raw connected component image has this ID.
 	n: int  # The 'order' of the topotag, i.e., the sqrt of the number of internal bits.
 	vertex_positions: list  # A list of tuples of x,y, NOT y,x.
-	pose: list
+	pose: Matrix
+	# Useful for debugging and rendering:
+	horizontal_baseline: Tuple[float, float] # dx, dy
+	vertical_baseline: Tuple[float, float]
+	top_left: Tuple[int, int]
+	top_right: Tuple[int, int]
+	bottom_left: Tuple[int, int]
 
 	@staticmethod
 	def generate_points(k: int) -> list:
-		"""Returns a list of k^2 coordinates with idx=0 being at 0,0 and (k,0) being at [scale_factor, 0.0].
+		"""Returns a list of k^2 coordinates with idx=0 being at 0,0.
 		Others match to the coordinates as read in the appropriate vertex order.
-		Vertices are ordered top-left, top-second-from-left, top-right, bottom-left, left-to-right on top,
-		top-to-bottom on left side, left-to-right-top-to-bottom in remaining locations.
-
-		TODO: There's a bug with this returning the points at a scale of 2/3rds.
-		TODO: There's also a bug where we generate the points in the wrong order.  It appears that while we decode the
-		items in a certain order (top-left two, top right, bottom left, top line, left line, left-right-top-down), the
-		numbering is actually still only left-to-right-top-to-bottom when we encode things.
+		Vertices are ordered left-to-right, top-to-bottom.
 		"""
 		scale_factor = 1.0
-		spacing = scale_factor / float(k)
+		spacing = scale_factor / float(k-1)
 		vertices = list()
-		# Special cases.
-		v0 = (0, 0)
-		v1 = (spacing/2.0, 0)
-		v2 = (spacing*(k-1), 0)
-		v3 = (0, spacing*(k-1))
-		vertices.extend([v0, v1, v2, v3])
-		# Row 0 has k items still, but we already made three.
-		for p in range(2, k-1):  # Again, we already made p0, p1, and p2.  We go up to k instead of k+1 because vert v2 is at that postion.
-			vertices.append((spacing*p, 0))
-		# Now do the first column for the next set of verts.
-		for p in range(1, k-1):  # We made v0 and v3 already, so move downward.
-			vertices.append((0, spacing*p))
 		# Fill in the final grid.
-		for py in range(1, k):
-			for px in range(1, k):
-				vertices.append((px*spacing, py*spacing))
-		print(vertices)
+		for py in range(0, k):
+			for px in range(0, k):
+				if py == 0 and px == 1:
+					vertices.append((px * (spacing*0.5), py * spacing))
+				else:
+					vertices.append((px*spacing, py*spacing))
 		return vertices
 
 	@staticmethod
@@ -155,7 +244,8 @@ class TopoTag:
 
 		# Render a color image for the island_matrix.
 		img = Image.new('L', size=(width, width))
-		padding = width//(2*k)
+
+		padding = width//(2+k)  # The 2+ makes the padding and tags look better.
 		work_area_width = width - (2*padding)
 		width_per_marker = work_area_width//k  # Reassign, after we remove our border padding.
 		pts = TopoTag.generate_points(k)
@@ -168,21 +258,21 @@ class TopoTag:
 			x = (p[0] * work_area_width)
 			y = (p[1] * work_area_width)
 			canvas.ellipse((
-				x-(width_per_marker//3)+padding, y-(width_per_marker//3)+padding,
-				x+(width_per_marker//3)+padding, y+(width_per_marker//3)+padding
+				x-(width_per_marker//2)+padding, y-(width_per_marker//2)+padding,
+				x+(width_per_marker//2)+padding, y+(width_per_marker//2)+padding
 				), fill=0
 			)
 			if bit_id < len(bits) and bits[bit_id]:
 				canvas.ellipse((
-					x - (width_per_marker // 6) + padding, y - (width_per_marker // 6) + padding,
-					x + (width_per_marker // 6) + padding, y + (width_per_marker // 6) + padding
+					x - (width_per_marker // 4) + padding, y - (width_per_marker // 4) + padding,
+					x + (width_per_marker // 4) + padding, y + (width_per_marker // 4) + padding
 					), fill=255
 				)
 				canvas.text((x+padding, y+padding), f"Bit {bit_id} {bits[bit_id]}", fill=120)
 		return img
 
 	@staticmethod
-	def from_island_data(island_id, island_data: list, marker_width_mm: Optional[float] = None) -> Optional:
+	def from_island_data(island_id, island_data: list, camera_intrinsics: Optional[CameraIntrinsics] = None) -> Optional:
 		"""Given the ID of an island to decode, the list of all island data, and the matrix of connected components,
 		attempt to decode the island with the given ID into a TopoTag.  Will return a TopoTag or None."""
 
@@ -191,9 +281,6 @@ class TopoTag:
 		# Quick reject regions too small:
 		if island_data[island_id].num_pixels < 10*10 or island_data[island_id].width() < 16 or island_data[island_id].height() < 16:
 			return None
-
-		if marker_width_mm is None:
-			marker_width_mm = 100.0
 
 		# The first pixel of each region is labeled with a capital letter.
 		# island_id in this case will be 'A' (though it's actually an int)
@@ -257,7 +344,8 @@ class TopoTag:
 			return None
 		third_region_id = baseline_horizontal_regions[-1]
 		third_region_center = island_data[third_region_id].center()
-		baseline_horizontal_slope = (dx, dy)
+		baseline_horizontal_slope = (third_region_center[0] - first_region_center[0], third_region_center[1] - first_region_center[1])
+		baseline_angle = math.atan2(baseline_horizontal_slope[1], baseline_horizontal_slope[0])
 
 		# Now we actually can pick the true 'first' region in the paper.  Region B in our diagram.
 		# If region two is farther region three than region one, swap one and two.
@@ -267,19 +355,30 @@ class TopoTag:
 
 		# Now that we have region 2 and 3, use that to find 4.
 		dx, dy = third_region_center[0] - first_region_center[0], third_region_center[1] - first_region_center[1]
-		# We can 'rotate' the line 90 degrees by setting x' = -y and y = x.
-		dx, dy = -dy, dx
-		baseline_vertical_regions = find_regions_along_line(first_region_center, (dx, dy), island_id, island_data)
+		# A dot B / mag(a)*mag(b) = cos theta
+		# The forth region is the one that makes the biggest angle with respect to one and three.
+		max_angle_to_r4 = 0
+		baseline_vertical_slope = (-dy, dx)  # Sorta' hack: assume 90 degree, but this will be overridden below.
+		for candidate in island_data[island_id].children:
+			# Calculate the angle.
+			if candidate == first_region_id:
+				continue
+			forth_region_center = island_data[candidate].center()
+			candidate_slope = (forth_region_center[0] - first_region_center[0], forth_region_center[1] - first_region_center[1])
+			angle = math.fabs(math.atan2(candidate_slope[1], candidate_slope[0])-baseline_angle)
+			if angle > max_angle_to_r4:
+				max_angle_to_r4 = angle
+				baseline_vertical_slope = candidate_slope
+		baseline_vertical_regions = find_regions_along_line(first_region_center, baseline_vertical_slope, island_id, island_data)
 		if len(baseline_vertical_regions) == 0:
 			# print("Can't find 4th region")
 			return None
 		forth_region_id = baseline_vertical_regions[-1]
 		forth_region_center = island_data[forth_region_id].center()
-		baseline_vertical_slope = (dx, dy)
 
 		# Finally, decode our tag and get the vertex positions.
 		all_region_ids = {baseline_region_id, first_region_id, second_region_id}
-		vertices = [first_region_center, second_region_center, third_region_center, forth_region_center]
+		vertices = [first_region_center, second_region_center]
 		# The corners are locked.  We can use our horizontal and vertical baselines to read 'left to right' the untouched islands.
 		for vertical_region in baseline_vertical_regions:  # Top to bottom.
 			for horizontal_region in find_regions_along_line(island_data[vertical_region].center(), baseline_horizontal_slope, island_id, island_data):
@@ -294,15 +393,31 @@ class TopoTag:
 			if len(island_data[region].children) > 0:
 				code += 1
 			code = code << 1
+		code = code >> 1  # We have an extra divide-by-two.
 
 		# Recover pose from marker positions.
 		# Start by computing the fake 'planar' case where we assume island 0 is at 0,0,0 in the world.
 		# Basically assume that the marker region 1 is at 0,0 and move right.
 		k_value = int(math.sqrt(len(all_region_ids)))
+		if k_value < 3:
+			return None
 		positions_2d = numpy.asarray(TopoTag.generate_points(k_value))
 		positions_3d = numpy.hstack([positions_2d, numpy.zeros(shape=(positions_2d.shape[0], 1))])
+		# pos_2d is our 'projection'.  Pretend it exists at the origin in R3.
+		projection = CameraExtrinsics.from_naive_dlt(positions_2d, positions_3d)
 
-		result = TopoTag(code, island_id, k_value, vertices, [])
+		result = TopoTag(
+			code,
+			island_id,
+			k_value,
+			vertices,
+			projection,
+			baseline_horizontal_slope,
+			baseline_vertical_slope,
+			top_left=first_region_center,
+			top_right=third_region_center,
+			bottom_left=forth_region_center
+		)
 		return result
 
 
@@ -587,11 +702,11 @@ def debug_show_tags(tags, island_data, island_matrix, show=True):
 		island_id = tag.island_id
 		for vertex in tag.vertex_positions:
 			canvas.rectangle((vertex[0]-1, vertex[1]-1, vertex[0]+1, vertex[1]+1), outline=(255, 255, 255))
-		canvas.text((island_data[island_id].x_min, island_data[island_id].y_min), f"Isl{island_id} - Code{tag.tag_id}", fill=(255, 255, 255))
+		canvas.text((island_data[island_id].x_min, island_data[island_id].y_min), f"I{island_id} - Code{tag.tag_id}", fill=(255, 255, 255))
 		canvas.rectangle((island_data[island_id].x_min, island_data[island_id].y_min, island_data[island_id].x_max, island_data[island_id].y_max), outline=(255, 0, 255))
-		canvas.line((tag.vertex_positions[0][0], tag.vertex_positions[0][1], tag.vertex_positions[2][0], tag.vertex_positions[2][1]), fill=(0, 255, 255))
-		canvas.line((tag.vertex_positions[0][0], tag.vertex_positions[0][1], tag.vertex_positions[3][0], tag.vertex_positions[3][1]), fill=(255, 255, 0))
-		canvas.line((tag.vertex_positions[0][0], tag.vertex_positions[0][1], tag.vertex_positions[1][0], tag.vertex_positions[1][1]), fill=(255, 255, 255))
+		canvas.line((tag.top_left[0], tag.top_left[1], tag.top_right[0], tag.top_right[1]), fill=(0, 255, 255))
+		canvas.line((tag.top_left[0], tag.top_left[1], tag.bottom_left[0], tag.bottom_left[1]), fill=(0, 255, 255))
+
 	if show:
 		img.show()
 	return img
