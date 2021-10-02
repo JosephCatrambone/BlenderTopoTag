@@ -114,28 +114,38 @@ class CameraExtrinsics:
 		# Use SVD to find r|t.
 		homo_mat = numpy.zeros(shape=(projection.shape[0]*2, 12))
 		for i in range(projection.shape[0]):
-			homo_mat[(i * 2), 0] = world[i, 0]
-			homo_mat[(i * 2), 1] = world[i, 1]
-			homo_mat[(i * 2), 2] = world[i, 2]
+			x = world[i, 0]
+			y = world[i, 1]
+			z = world[i, 2]
+			u = projection[i, 0]
+			v = projection[i, 1]
+			homo_mat[(i * 2), 0] = x
+			homo_mat[(i * 2), 1] = y
+			homo_mat[(i * 2), 2] = z
 			homo_mat[(i * 2), 3] = 1
 
-			homo_mat[(i * 2), 8] = -projection[i,0]*world[i, 0]
-			homo_mat[(i * 2), 9] = -projection[i,0]*world[i, 1]
-			homo_mat[(i * 2), 10] = -projection[i,0]*world[i, 2]
-			homo_mat[(i * 2), 11] = -projection[i,0]
+			homo_mat[(i * 2), 8] = -u*x
+			homo_mat[(i * 2), 9] = -u*y
+			homo_mat[(i * 2), 10] = -u*z
+			homo_mat[(i * 2), 11] = -u
 
-			homo_mat[(i * 2)+1, 4] = world[i, 0]
-			homo_mat[(i * 2)+1, 5] = world[i, 1]
-			homo_mat[(i * 2)+1, 6] = world[i, 2]
+			homo_mat[(i * 2)+1, 4] = x
+			homo_mat[(i * 2)+1, 5] = y
+			homo_mat[(i * 2)+1, 6] = z
 			homo_mat[(i * 2)+1, 7] = 1
 
-			homo_mat[(i * 2)+1, 8] = -projection[i, 1] * world[i, 0]
-			homo_mat[(i * 2)+1, 9] = -projection[i, 1] * world[i, 1]
-			homo_mat[(i * 2)+1, 10] = -projection[i, 1] * world[i, 2]
-			homo_mat[(i * 2)+1, 11] = -projection[i, 1]
+			homo_mat[(i * 2)+1, 8] = -v*x
+			homo_mat[(i * 2)+1, 9] = -v*y
+			homo_mat[(i * 2)+1, 10] = -v*z
+			homo_mat[(i * 2)+1, 11] = -v
 		# Given Ax=0, A is an overdetermined homogeneous solution, and the nontrivial solution is the smallest eigenvec.
 		_, _, v = numpy.linalg.svd(homo_mat, full_matrices=False)
 		return v[-1,:].reshape((3,4))
+
+	@classmethod
+	def from_4point(cls, projection, world):
+		"""Apply Yang et. al.'s method from 2009."""
+		pass
 
 @dataclass
 class IslandBounds:
@@ -402,9 +412,9 @@ class TopoTag:
 		if k_value < 3:
 			return None
 		positions_2d = numpy.asarray(TopoTag.generate_points(k_value))
-		positions_3d = numpy.hstack([positions_2d, numpy.zeros(shape=(positions_2d.shape[0], 1))])
+		positions_3d = numpy.hstack([positions_2d, numpy.ones(shape=(positions_2d.shape[0], 1))])
 		# pos_2d is our 'projection'.  Pretend it exists at the origin in R3.
-		projection = CameraExtrinsics.from_naive_dlt(positions_2d, positions_3d)
+		projection = CameraExtrinsics.from_naive_dlt(numpy.asarray(vertices), positions_3d)
 
 		result = TopoTag(
 			code,
