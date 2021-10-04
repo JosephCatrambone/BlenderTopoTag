@@ -76,6 +76,16 @@ class CameraIntrinsics:
 			[                  0,                   0,                      1],
 		])
 
+	def to_inverse_matrix(self):
+		"""Return the matrix M such that M @ self.to_matrix() = I"""
+		# [ACD][acd]   [1  ]
+		# [ BE][ be] = [ 1 ]
+		# [  1][  f]   [  1]
+		return numpy.linalg.inv(self.to_matrix())  # TODO: Compute this with our special knowledge.
+		# A*a = 1
+		# A*c + C*b = 0
+		# Ad + Ce + Df = 0
+
 	@classmethod
 	def from_beta_matrix(cls, b):
 		principal_point_y = (b[0,1]*b[0,2] - b[0,0]*b[1,2])/(b[0,0]*b[1,1]-b[0,1]*b[0,1])
@@ -95,15 +105,65 @@ class CameraExtrinsics:
 	y_translation: float
 	z_translation: float
 
+	def project_points(self, points_3d: Matrix, camera_intrinsics: Optional[CameraIntrinsics] = None, renormalize: bool = False) -> Matrix:
+		"""Projects a matrix of size [nx3] OR [nx4] to [nx3].  If renormalize is True, will return [[x, y, 1], ...]."""
+		# points is nx3 or nx4.
+		if points_3d.shape[1] == 3: # x, y, z.  Augment to x, y, z, 1.
+			points_3d = numpy.hstack([points_3d, numpy.ones(shape=(points_3d.shape[0], 1))])
+		if points_3d.shape[1] != 4:
+			# We attempted to normalize, but obviously we got points that were outside the range.
+			raise Exception(f"Got points_3d matrix of unexpected shape: {points_3d.shape}")
+		# points = nx4
+
+		# p' = K * H * p
+		# K = 3x3, H = 3x4, p = nx4
+		projection = self.to_matrix()
+		if camera_intrinsics is not None:
+			projection = camera_intrinsics.to_matrix() @ projection
+		points_2d = (projection @ points_3d.T).T
+
+		if renormalize:
+			points_2d[:, 0] /= points_2d[:, 2]
+			points_2d[:, 1] /= points_2d[:, 2]
+			points_2d[:, 2] /= points_2d[:, 2]
+
+		return points_2d
+
+	def unproject_points(self, points_2d: Matrix, camera_intrinsics: CameraIntrinsics) -> Matrix:
+		"""Given camera intrinsics and points in the shape [nx2] or [nx3] invert this matrix and find the original 3d points.  Returns an nx3 matrix."""
+		# p' = K * H * p
+		# K_inv p' = H * p
+		# H_inv K_inv p' = p
+		# K = 3x3, H = 3x4, p=4xn
+		# K_inv = 3x3 -> p' = 3xn
+		if points_2d.shape[1] == 2:
+			points_2d = numpy.hstack([points_2d, numpy.ones(shape=(points_2d.shape[0], 1))])
+		if points_2d.shape[1] != 3:
+			raise Exception(f"Got points_2d array with unexpected shape: {points_2d.shape}")
+		points = camera_intrinsics.to_inverse_matrix() @ points_2d.T  # Points is now 3xn
+		rotation_matrix = RotationMatrix.from_euler(self.x_rotation, self.y_rotation, self.z_rotation)
+		# When multiplying by the 3x4 we rotate, then translate, so when we invert we un-translate, then rotate.
+		points[0, :] -= self.x_translation
+		points[1, :] -= self.y_translation
+		points[2, :] -= self.z_translation
+		return (rotation_matrix.T @ points).T
+
 	def to_matrix(self):
 		return numpy.hstack([
 			RotationMatrix.from_euler(self.x_rotation, self.y_rotation, self.z_rotation),
 			numpy.asarray([[self.x_translation, self.y_translation, self.z_translation]]).T
 		])
 
+	def to_inverse_matrix(self):
+		"""Return the inverse of this operation."""
+		return numpy.hstack([
+			RotationMatrix.from_euler(self.x_rotation, self.y_rotation, self.z_rotation).T,
+			-numpy.asarray([[self.x_translation, self.y_translation, self.z_translation]]).T
+		])
+
 	@classmethod
 	def from_naive_dlt(cls, projection, world):
-		"""Compute the camera extrinsics from the projected image of the world coordinates."""
+		"""Compute the projection matrix from the projected image of the world coordinates."""
 		assert projection.shape[1] >= 2
 		assert world.shape[1] >= 3
 		# s * [u', v', 1].T = [R | t] * [x, y, z, 1].T
@@ -140,7 +200,8 @@ class CameraExtrinsics:
 			homo_mat[(i * 2)+1, 11] = -v
 		# Given Ax=0, A is an overdetermined homogeneous solution, and the nontrivial solution is the smallest eigenvec.
 		_, _, v = numpy.linalg.svd(homo_mat, full_matrices=False)
-		return v[-1,:].reshape((3,4))
+		projection = v[-1,:].reshape((3,4))
+		return projection
 
 	@classmethod
 	def from_4point(cls, projection, world):
@@ -209,7 +270,8 @@ class TopoTag:
 	island_id: int  # The raw connected component image has this ID.
 	n: int  # The 'order' of the topotag, i.e., the sqrt of the number of internal bits.
 	vertex_positions: list  # A list of tuples of x,y, NOT y,x.
-	pose: Matrix
+	pose_raw: Matrix  # The raw value of the recovered camera matrix.  Needs inversion and repositioning.
+	extrinsics: Type[CameraExtrinsics]
 	# Useful for debugging and rendering:
 	horizontal_baseline: Tuple[float, float] # dx, dy
 	vertical_baseline: Tuple[float, float]
@@ -239,18 +301,17 @@ class TopoTag:
 	def generate_marker(k: int, code: int, width: int):
 		from PIL import Image, ImageDraw
 		# We iterate over points in reverse order, so we need to flip the bits in our code.
-		bits = list()
-		while code > 0:
-			if code & 0x1:
-				bits.append(1)
+		bits = [False] * (k*k)
+		for bit_idx in range(2, len(bits)):
+			if code & (0x1 << (bit_idx-2)):
+				bits[bit_idx] = True
 			else:
-				bits.append(0)
-			code //= 2
-		bits.append(1)  # For the first two regions.
-		bits.append(1)
-		if len(bits) > k*k:
-			raise Exception(f"Marker with {k}*{k} bits needs {len(bits)} to store {code}")
-		bits = list(reversed(bits))
+				bits[bit_idx] = False
+		if math.ceil(math.log2(max(1,code))) > k*k:
+			raise Exception(f"Marker with {k}*{k} bits needs {len(bits)} to store {code} (with hold-out of 2)")
+		bits.append(True)  # For the first two regions.
+		bits.append(True)
+		bits = list(reversed(bits))  # This feels completely backwards from what the paper says, but matches their code.
 
 		# Render a color image for the island_matrix.
 		img = Image.new('L', size=(width, width))
@@ -278,7 +339,7 @@ class TopoTag:
 					x + (width_per_marker // 4) + padding, y + (width_per_marker // 4) + padding
 					), fill=255
 				)
-				canvas.text((x+padding, y+padding), f"Bit {bit_id} {bits[bit_id]}", fill=120)
+				#canvas.text((x+padding, y+padding), f"Bit {bit_id} {bits[bit_id]}", fill=120)
 		return img
 
 	@staticmethod
@@ -286,11 +347,13 @@ class TopoTag:
 		"""Given the ID of an island to decode, the list of all island data, and the matrix of connected components,
 		attempt to decode the island with the given ID into a TopoTag.  Will return a TopoTag or None."""
 
-		# TODO: This should filter pixels which are less than a certain amount of the baseline area.
-
 		# Quick reject regions too small:
 		if island_data[island_id].num_pixels < 10*10 or island_data[island_id].width() < 16 or island_data[island_id].height() < 16:
 			return None
+
+		# We should do better to estimate the camera matrix.
+		if camera_intrinsics is None:
+			camera_intrinsics = CameraIntrinsics(1.0, 1.0, 0.0, 0, 0)
 
 		# The first pixel of each region is labeled with a capital letter.
 		# island_id in this case will be 'A' (though it's actually an int)
@@ -412,9 +475,13 @@ class TopoTag:
 		if k_value < 3:
 			return None
 		positions_2d = numpy.asarray(TopoTag.generate_points(k_value))
-		positions_3d = numpy.hstack([positions_2d, numpy.ones(shape=(positions_2d.shape[0], 1))])
+		positions_3d = numpy.hstack([positions_2d, numpy.ones(shape=(positions_2d.shape[0], 1))])# @ numpy.linalg.inv(camera_intrinsics.to_matrix())
 		# pos_2d is our 'projection'.  Pretend it exists at the origin in R3.
 		projection = CameraExtrinsics.from_naive_dlt(numpy.asarray(vertices), positions_3d)
+		rotation = projection[0:3, 0:3].T  # Transpose to reverse it and get the marker relative to camera.
+		rot_x, rot_y, rot_z = RotationMatrix.to_euler(rotation)
+		translation = -projection[-1, :]  # Negate to get marker relative to camera.
+		extrinsics = CameraExtrinsics(rot_x, rot_y, rot_z, translation[0], translation[1], translation[2])
 
 		result = TopoTag(
 			code,
@@ -422,6 +489,7 @@ class TopoTag:
 			k_value,
 			vertices,
 			projection,
+			extrinsics,
 			baseline_horizontal_slope,
 			baseline_vertical_slope,
 			top_left=first_region_center,
@@ -623,9 +691,12 @@ def find_tags(binarized_image: Matrix) -> (list, list, Matrix):
 		if island_data[b] in island_data[a]:
 			island_data[a].children.add(b)
 
+	# Ballpark camera intrinsics for now.
+	camera_intrinsics = CameraIntrinsics(1.0, 1.0, 0.0, binarized_image.shape[1]//2, binarized_image.shape[0]//2)
+
 	topo_tags = list()
 	for island_id in range(2, len(island_data)):
-		tag = TopoTag.from_island_data(island_id, island_data)
+		tag = TopoTag.from_island_data(island_id, island_data, camera_intrinsics)
 		if tag:
 			topo_tags.append(tag)
 	return topo_tags, island_data, island_matrix
@@ -711,15 +782,41 @@ def debug_show_tags(tags, island_data, island_matrix, show=True):
 	for tag in tags:
 		island_id = tag.island_id
 		for vertex in tag.vertex_positions:
-			canvas.rectangle((vertex[0]-1, vertex[1]-1, vertex[0]+1, vertex[1]+1), outline=(255, 255, 255))
+			canvas.rectangle((vertex[0]-1, vertex[1]-1, vertex[0]+1, vertex[1]+1), outline=(200, 200, 200))
 		canvas.text((island_data[island_id].x_min, island_data[island_id].y_min), f"I{island_id} - Code{tag.tag_id}", fill=(255, 255, 255))
 		canvas.rectangle((island_data[island_id].x_min, island_data[island_id].y_min, island_data[island_id].x_max, island_data[island_id].y_max), outline=(255, 0, 255))
 		canvas.line((tag.top_left[0], tag.top_left[1], tag.top_right[0], tag.top_right[1]), fill=(0, 255, 255))
 		canvas.line((tag.top_left[0], tag.top_left[1], tag.bottom_left[0], tag.bottom_left[1]), fill=(0, 255, 255))
+		#debug_render_cube(tag, canvas)
+		print(f"Tag origin: {tag.extrinsics.x_translation}, {tag.extrinsics.y_translation}, {tag.extrinsics.z_translation}")
 
 	if show:
 		img.show()
 	return img
+
+def debug_render_cube(tag: TopoTag, canvas):
+	"""Render a cube from the perspective of the camera."""
+	points_3d = numpy.asarray([
+		[0, 0, 0, 1],
+		[1, 0, 0, 1],
+		[1, 1, 0, 1],
+		[0, 1, 0, 1],
+		[0, 0, 1, 1],
+		[1, 0, 1, 1],
+		[1, 1, 1, 1],
+		[0, 1, 1, 1],
+	])
+	projection_matrix = tag.pose_raw # tag.extrinsics.to_matrix()
+	projection = (projection_matrix @ points_3d.T).T
+	projection[:, 0] /= projection[:, 2]
+	projection[:, 1] /= projection[:, 2]
+	#projection[:, 2] /= projection[:, 2]
+	# Draw faces...
+	for i in range(0, 4):
+		canvas.line((projection[i, 0], projection[i, 1], projection[(i+1)%4, 0], projection[(i+1)%4, 1]), fill=(255, 255, 255))
+		canvas.line((projection[(i+4), 0], projection[(i+4), 1], projection[(i+5)%8, 0], projection[(i+5)%8, 1]), fill=(255, 255, 255))
+	# Draw edges between faces (for the other faces)
+	print(projection)
 
 def main(image_filename: str = None, image = None):
 	print("Loading image...")
