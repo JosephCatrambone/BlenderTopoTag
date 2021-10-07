@@ -17,10 +17,10 @@ def test_to_euler_ident():
 	assert abs(z_rot) < 1e-6
 
 def test_from_euler_ident():
-	rot = RotationMatrix.from_euler(0, 0, 0)
+	rot = RotationMatrix.to_matrix(0, 0, 0)
 	assert numpy.allclose(rot, numpy.eye(3))
 
 def test_self_inverse():
-	rot = RotationMatrix.from_euler(10, 20, 30)
+	rot = RotationMatrix.to_matrix(10, 20, 30)
 	# A rotation matrix transposed must be its own inverse.
 	assert numpy.allclose(rot @ rot.T, numpy.eye(3))

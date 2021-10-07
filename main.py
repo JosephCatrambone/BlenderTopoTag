@@ -25,11 +25,23 @@ class RotationMatrix:
 		return (x, y, z)
 
 	@classmethod
-	def from_euler(cls, x: float, y: float, z:float):
-		x_rot = cls.from_x_rotation(x)
-		y_rot = cls.from_y_rotation(y)
-		z_rot = cls.from_z_rotation(z)
-		return z_rot @ y_rot @ x_rot
+	def to_matrix(cls, x: float, y: float, z:float):
+		#x_rot = cls.from_x_rotation(x)
+		#y_rot = cls.from_y_rotation(y)
+		#z_rot = cls.from_z_rotation(z)
+		#return z_rot @ y_rot @ x_rot
+		# To invert, x, y, z = -z, -y, -x
+		cx = math.cos(x)
+		sx = math.sin(x)
+		cy = math.cos(y)
+		sy = math.sin(y)
+		cz = math.cos(z)
+		sz = math.sin(z)
+		return numpy.asarray([
+			[cz*cy*cx-sz*sx, cz*cy*sx+sz*cx, -cz*sy],
+			[-sz*cy*cx-cz*sx, -sz*cy*sx+cz*cx, sz*sy],
+			[sy*cx, sy*sx, cy]
+		])
 
 	@classmethod
 	def from_x_rotation(cls, val: float):
@@ -103,7 +115,7 @@ class CameraExtrinsics:
 	z_rotation: float
 	x_translation: float
 	y_translation: float
-	z_translation: float
+	z_translation: float  # The camera looks forward to -Z when all rotation is zero.
 
 	def project_points(self, points_3d: Matrix, camera_intrinsics: Optional[CameraIntrinsics] = None, renormalize: bool = False) -> Matrix:
 		"""Projects a matrix of size [nx3] OR [nx4] to [nx3].  If renormalize is True, will return [[x, y, 1], ...]."""
@@ -141,7 +153,7 @@ class CameraExtrinsics:
 		if points_2d.shape[1] != 3:
 			raise Exception(f"Got points_2d array with unexpected shape: {points_2d.shape}")
 		points = camera_intrinsics.to_inverse_matrix() @ points_2d.T  # Points is now 3xn
-		rotation_matrix = RotationMatrix.from_euler(self.x_rotation, self.y_rotation, self.z_rotation)
+		rotation_matrix = RotationMatrix.to_matrix(self.x_rotation, self.y_rotation, self.z_rotation)
 		# When multiplying by the 3x4 we rotate, then translate, so when we invert we un-translate, then rotate.
 		points[0, :] -= self.x_translation
 		points[1, :] -= self.y_translation
@@ -150,63 +162,24 @@ class CameraExtrinsics:
 
 	def to_matrix(self):
 		return numpy.hstack([
-			RotationMatrix.from_euler(self.x_rotation, self.y_rotation, self.z_rotation),
+			RotationMatrix.to_matrix(self.x_rotation, self.y_rotation, self.z_rotation),
 			numpy.asarray([[self.x_translation, self.y_translation, self.z_translation]]).T
 		])
 
 	def to_inverse_matrix(self):
 		"""Return the inverse of this operation."""
 		return numpy.hstack([
-			RotationMatrix.from_euler(self.x_rotation, self.y_rotation, self.z_rotation).T,
+			RotationMatrix.to_matrix(self.x_rotation, self.y_rotation, self.z_rotation).T,
 			-numpy.asarray([[self.x_translation, self.y_translation, self.z_translation]]).T
 		])
 
 	@classmethod
-	def from_naive_dlt(cls, projection, world):
-		"""Compute the projection matrix from the projected image of the world coordinates."""
-		assert projection.shape[1] >= 2
-		assert world.shape[1] >= 3
-		# s * [u', v', 1].T = [R | t] * [x, y, z, 1].T
-		#
-		#   0  1  2  3  4  5  6  7    8     9     10   11
-		# | x  y  z  1  0  0  0  0  -u'x  -u'y  -u'z  -u' |  * [r11 r12 r13 tx r21 r22 r23 ty r31 r32 r33 tz].T = 0
-		# | 0  0  0  0  x  y  z  1  -v'x  -v'y  -v'z  -v' |
-		# Use SVD to find r|t.
-		homo_mat = numpy.zeros(shape=(projection.shape[0]*2, 12))
-		for i in range(projection.shape[0]):
-			x = world[i, 0]
-			y = world[i, 1]
-			z = world[i, 2]
-			u = projection[i, 0]
-			v = projection[i, 1]
-			homo_mat[(i * 2), 0] = x
-			homo_mat[(i * 2), 1] = y
-			homo_mat[(i * 2), 2] = z
-			homo_mat[(i * 2), 3] = 1
-
-			homo_mat[(i * 2), 8] = -u*x
-			homo_mat[(i * 2), 9] = -u*y
-			homo_mat[(i * 2), 10] = -u*z
-			homo_mat[(i * 2), 11] = -u
-
-			homo_mat[(i * 2)+1, 4] = x
-			homo_mat[(i * 2)+1, 5] = y
-			homo_mat[(i * 2)+1, 6] = z
-			homo_mat[(i * 2)+1, 7] = 1
-
-			homo_mat[(i * 2)+1, 8] = -v*x
-			homo_mat[(i * 2)+1, 9] = -v*y
-			homo_mat[(i * 2)+1, 10] = -v*z
-			homo_mat[(i * 2)+1, 11] = -v
-		# Given Ax=0, A is an overdetermined homogeneous solution, and the nontrivial solution is the smallest eigenvec.
-		_, _, v = numpy.linalg.svd(homo_mat, full_matrices=False)
-		projection = v[-1,:].reshape((3,4))
-		return projection
-
-	@classmethod
-	def from_4point(cls, projection, world):
-		"""Apply Yang et. al.'s method from 2009."""
-		pass
+	def from_projection_matrix(cls, projection: Matrix):
+		assert projection.shape[0] == 3 and projection.shape[1] == 4
+		translation = projection[:,-1]
+		rotation = projection[0:3,0:3]
+		x_rot, y_rot, z_rot = RotationMatrix.to_euler(rotation)
+		return cls(x_rot, y_rot, z_rot, translation[0], translation[1], translation[2])
 
 @dataclass
 class IslandBounds:
@@ -270,7 +243,7 @@ class TopoTag:
 	island_id: int  # The raw connected component image has this ID.
 	n: int  # The 'order' of the topotag, i.e., the sqrt of the number of internal bits.
 	vertex_positions: list  # A list of tuples of x,y, NOT y,x.
-	pose_raw: Matrix  # The raw value of the recovered camera matrix.  Needs inversion and repositioning.
+	intrinsics: Type[CameraIntrinsics]
 	extrinsics: Type[CameraExtrinsics]
 	# Useful for debugging and rendering:
 	horizontal_baseline: Tuple[float, float] # dx, dy
@@ -475,20 +448,16 @@ class TopoTag:
 		if k_value < 3:
 			return None
 		positions_2d = numpy.asarray(TopoTag.generate_points(k_value))
-		positions_3d = numpy.hstack([positions_2d, numpy.ones(shape=(positions_2d.shape[0], 1))])# @ numpy.linalg.inv(camera_intrinsics.to_matrix())
+		positions_3d = numpy.hstack([positions_2d, numpy.zeros(shape=(positions_2d.shape[0], 1))])# @ numpy.linalg.inv(camera_intrinsics.to_matrix())
 		# pos_2d is our 'projection'.  Pretend it exists at the origin in R3.
-		projection = CameraExtrinsics.from_naive_dlt(numpy.asarray(vertices), positions_3d)
-		rotation = projection[0:3, 0:3].T  # Transpose to reverse it and get the marker relative to camera.
-		rot_x, rot_y, rot_z = RotationMatrix.to_euler(rotation)
-		translation = -projection[-1, :]  # Negate to get marker relative to camera.
-		extrinsics = CameraExtrinsics(rot_x, rot_y, rot_z, translation[0], translation[1], translation[2])
+		intrinsics, extrinsics = calibrate_camera_from_known_points(numpy.asarray(vertices), positions_3d)
 
 		result = TopoTag(
 			code,
 			island_id,
 			k_value,
 			vertices,
-			projection,
+			intrinsics,
 			extrinsics,
 			baseline_horizontal_slope,
 			baseline_vertical_slope,
@@ -558,6 +527,96 @@ def resize_linear(image_matrix, new_height:int, new_width:int):
 #
 # Maths + Logic Helpers
 #
+
+def calibrate_camera_from_known_points(projection: Matrix, world: Matrix) -> (CameraIntrinsics, CameraExtrinsics):
+	"""Compute the projection matrix from the projected image of the world coordinates."""
+	assert projection.shape[1] >= 2
+	assert world.shape[1] >= 3
+	# s * [u', v', 1].T = [R | t] * [x, y, z, 1].T
+	#
+	#   0  1  2  3  4  5  6  7    8     9     10   11
+	# | x  y  z  1  0  0  0  0  -u'x  -u'y  -u'z  -u' |  * [r11 r12 r13 tx r21 r22 r23 ty r31 r32 r33 tz].T = 0
+	# | 0  0  0  0  x  y  z  1  -v'x  -v'y  -v'z  -v' |
+	# Use SVD to find r|t.
+	#
+	# Full derivation:
+	# [x, y, z].T = [p1, p2, p3, p4; p5, p6, p7, p8; p9, p10, p11, p12] * [X, Y, Z, 1].T
+	# xProj = [P1 (p1, p2, p3, p4); P2; P3] * X.T
+	# x' = P1 X / P3 X
+	# y' = P2 X / P3 X
+	# -> Make linear via manip.
+	# P2 X - P3 X y' = 0
+	# P1 X - P3 X x' = 0
+	# ->
+	# [ X.T, 0, -x'*X.T ] * [ P1.T ] = 0
+	# [ 0, X.T, -y'*X.T ]   [ P2.T ]
+	#                       [ P3.T ]
+	# A                     x
+	homo_mat = numpy.zeros(shape=(projection.shape[0]*2, 12))
+	for i in range(projection.shape[0]):
+		x = world[i, 0]
+		y = world[i, 1]
+		z = world[i, 2]
+		u = projection[i, 0]
+		v = projection[i, 1]
+		homo_mat[(i * 2), 0] = x
+		homo_mat[(i * 2), 1] = y
+		homo_mat[(i * 2), 2] = z
+		homo_mat[(i * 2), 3] = 1
+
+		homo_mat[(i * 2), 8] = -u*x
+		homo_mat[(i * 2), 9] = -u*y
+		homo_mat[(i * 2), 10] = -u*z
+		homo_mat[(i * 2), 11] = -u
+
+		homo_mat[(i * 2)+1, 4] = x
+		homo_mat[(i * 2)+1, 5] = y
+		homo_mat[(i * 2)+1, 6] = z
+		homo_mat[(i * 2)+1, 7] = 1
+
+		homo_mat[(i * 2)+1, 8] = -v*x
+		homo_mat[(i * 2)+1, 9] = -v*y
+		homo_mat[(i * 2)+1, 10] = -v*z
+		homo_mat[(i * 2)+1, 11] = -v
+	# Given Ax=0, A is an overdetermined homogeneous solution, and the nontrivial solution is the smallest eigenvec.
+	_, _, v = numpy.linalg.svd(homo_mat, full_matrices=False)
+	p = v[-1,:].reshape((3,4))
+
+	# P = [p1, p2, p3, p4; p5, p6, p7, p8; p9, p10, p11, p12]
+	# R = [p1, p2, p3; p5, p6, p7; p9, p10, p11]
+	# t = [p4; p8; p12]
+	# P = K[R|t]
+	# P = K[R| -Rc]
+	# P = M| -Mc
+	# M = KR -> K is right-upper-triangular, R is orthogonal.  Get via RQ decomposigion.
+
+	_, _, v = numpy.linalg.svd(p, full_matrices=False)
+	C = v[:,-1]
+	if abs(v[-1,-1]) > 1e-6:
+		C /= v[-1, -1]
+
+	M = p[0:3,0:3]
+
+	# Renormalize p by multiplying by sign(det(M)).
+	sign_det_m = 1
+	if numpy.linalg.det(M) < 0:
+		sign_det_m = -1
+	M *= sign_det_m
+	p *= sign_det_m
+
+	K_hat, R_hat = numpy.linalg.qr(M)
+	K_signs = numpy.sign(K_hat)
+	D = numpy.diag([K_signs[0,0], K_signs[1,1], K_signs[2,2]])
+	K = K_hat @ D
+	R = D @ R_hat
+	t = -R @ C
+
+	K /= K[2,2]
+
+	intrinsics = CameraIntrinsics(K[0,0], K[1,1], K[0,1], K[0,2], K[1,2])
+	x_rot, y_rot, z_rot = RotationMatrix.to_euler(R)
+	extrinsics = CameraExtrinsics(x_rot, y_rot, z_rot, t[0], t[1], t[2])
+	return intrinsics, extrinsics
 
 def find_regions_along_line(origin: Tuple[float, float], dxdy: Tuple[float, float], island_id:int, island_data:list) -> list:
 	"""Returns a list of the region IDs on the given line inside the island.  Sorted by increasing distance from origin."""
