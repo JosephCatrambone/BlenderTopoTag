@@ -618,6 +618,79 @@ def calibrate_camera_from_known_points(projection: Matrix, world: Matrix) -> (Ca
 	extrinsics = CameraExtrinsics(x_rot, y_rot, z_rot, t[0], t[1], t[2])
 	return intrinsics, extrinsics
 
+def homography_from_planar_projection_basic(projection: Matrix, world_plane: Matrix) -> Matrix:
+	"""Compute the 3x3 homography matrix with h33 == 1.0, assuming world_plane is on the plane xy-plane with z=0."""
+	assert projection.shape[0] == world_plane.shape[0]
+
+	# 2nx8 * 8x1 = 2nx1
+	a_mat = numpy.zeros(shape=(2*projection.shape[0], 8))
+	b_mat = numpy.zeros(shape=(2*projection.shape[0], 1))
+	for idx in range(projection.shape[0]):
+		x_w = world_plane[idx, 0]
+		y_w = world_plane[idx, 1]
+		x_p = projection[idx, 0]
+		y_p = projection[idx, 1]
+		#  0  1  2  3  4  5    6      7
+		# [x, y, 1, 0, 0, 0, -x*x', -y*x'] * g = [x']
+		# [0, 0, 0, x, y, 1, -x*y', -y*y']     = [y']
+		a_mat[(idx * 2) + 0, 0] = x_w
+		a_mat[(idx * 2) + 0, 1] = y_w
+		a_mat[(idx * 2) + 0, 2] = 1
+		a_mat[(idx * 2) + 1, 3] = x_w
+		a_mat[(idx * 2) + 1, 4] = y_w
+		a_mat[(idx * 2) + 1, 5] = 1
+
+		a_mat[(idx * 2) + 0, 6] = -x_w*x_p
+		a_mat[(idx * 2) + 0, 7] = -y_w*x_p
+		a_mat[(idx * 2) + 1, 6] = -x_w*y_p
+		a_mat[(idx * 2) + 1, 7] = -y_w*y_p
+
+		b_mat[(idx * 2) + 0, 0] = x_p
+		b_mat[(idx * 2) + 1, 0] = y_p
+	soln, residuals, rank, singular_values = numpy.linalg.lstsq(a_mat, b_mat)
+	homography = numpy.asarray([
+		[soln[0,0], soln[1,0], soln[2,0]],
+		[soln[3,0], soln[4,0], soln[5,0]],
+		[soln[6,0], soln[7,0], 1],
+	])
+	return homography
+
+def homography_from_planar_projection_robust(projection: Matrix, world_plane: Matrix) -> Matrix:
+	"""Compute the 3x3 homography matrix, assuming world_plane is on the plane xy-plane with z=0.  Slower than basic,
+	but still works if the axis is inside the frame or h33 is at infinity."""
+	assert projection.shape[0] == world_plane.shape[0]
+	# 2nx9 * 9x1 = zeros
+	a_mat = numpy.zeros(shape=(2*projection.shape[0], 9))
+	for idx in range(projection.shape[0]):
+		x_w = world_plane[idx, 0]
+		y_w = world_plane[idx, 1]
+		x_p = projection[idx, 0]
+		y_p = projection[idx, 1]
+		#  0  1  2  3  4  5    6      7
+		# [x, y, 1, 0, 0, 0, -x*x', -y*x'] * g = [x']
+		# [0, 0, 0, x, y, 1, -x*y', -y*y']     = [y']
+		a_mat[(idx * 2) + 0, 0] = x_w
+		a_mat[(idx * 2) + 0, 1] = y_w
+		a_mat[(idx * 2) + 0, 2] = 1
+		a_mat[(idx * 2) + 1, 3] = x_w
+		a_mat[(idx * 2) + 1, 4] = y_w
+		a_mat[(idx * 2) + 1, 5] = 1
+
+		a_mat[(idx * 2) + 0, 6] = -x_w*x_p
+		a_mat[(idx * 2) + 0, 7] = -y_w*x_p
+		a_mat[(idx * 2) + 0, 8] = -x_p
+		a_mat[(idx * 2) + 1, 6] = -x_w*y_p
+		a_mat[(idx * 2) + 1, 7] = -y_w*y_p
+		a_mat[(idx * 2) + 1, 8] = -y_p
+
+	a_mat = a_mat.T @ a_mat
+	assert a_mat.shape[0] == 9 and a_mat.shape[1] == 9
+
+	u, s, v = numpy.linalg.svd(a_mat.T @ a_mat)
+	#_, _, h = numpy.linalg.svd(homo_mat, full_matrices=False)
+	homography = v[-1, :].reshape((3, 3))
+	return homography
+
 def find_regions_along_line(origin: Tuple[float, float], dxdy: Tuple[float, float], island_id:int, island_data:list) -> list:
 	"""Returns a list of the region IDs on the given line inside the island.  Sorted by increasing distance from origin."""
 	# This is a dumb and lazy way to do it, but we can move along the simplified line defined by dx/dy.
