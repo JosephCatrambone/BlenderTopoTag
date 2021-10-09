@@ -1,7 +1,7 @@
 
 import numpy
 import pytest
-from main import RotationMatrix
+from rotation import RotationMatrix
 
 
 def test_identity():

@@ -5,7 +5,7 @@ import dash_core_components as dcc
 import dash_html_components as html
 import plotly.graph_objects as go
 from dash.dependencies import Input, Output
-from main import CameraExtrinsics
+from camera import CameraExtrinsics
 import numpy
 
 app = dash.Dash(__name__)

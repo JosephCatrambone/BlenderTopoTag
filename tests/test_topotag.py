@@ -2,7 +2,8 @@
 import math
 import numpy
 import pytest
-from main import TopoTag, convert_image, binarize, find_tags
+from main import convert_image
+from topotag import TopoTag, find_tags, binarize
 
 
 def test_topotag_decode_k3():
