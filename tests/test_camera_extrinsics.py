@@ -2,7 +2,7 @@
 import math
 import numpy
 import pytest
-from computer_vision import calibrate_camera_from_known_points
+from computer_vision import calibrate_camera_from_known_points, refine_camera
 from camera import CameraIntrinsics, CameraExtrinsics
 
 
@@ -71,6 +71,19 @@ def test_invert_transform():
 	unprojected = cam.unproject_points(points_2d, cam_intrinsics)
 	assert numpy.allclose(points_3d, unprojected)
 
+def test_refine_pose():
+	coplanar_points_on_z = numpy.random.uniform(low=-1, high=1, size=(16, 3))
+	coplanar_points_on_z[:, 2] = 0.0
+
+	target_intrinsics = CameraIntrinsics(1.0, 1.0, 0.0, 1, 1)
+	target_extrinsics = CameraExtrinsics(0.1, 0.2, 0.3, 4, 5, 6)
+	projection = target_extrinsics.project_points(coplanar_points_on_z, target_intrinsics, renormalize=True)
+	estimated_intrinsics = CameraIntrinsics(1.0, 1.0, 0.0, 1, 1)
+	estimated_extrinsics = CameraExtrinsics(0.0, -0.1, 0.1, -0.1, 0.1, 2.0)
+	estimated_intrinsics, estimated_extrinsics = refine_camera(projection, coplanar_points_on_z, estimated_intrinsics, estimated_extrinsics, refine_k=False, refine_rt=True)
+	#assert numpy.allclose(target_intrinsics.to_matrix(), estimated_intrinsics.to_matrix())
+	assert numpy.allclose(target_extrinsics.to_matrix(), estimated_extrinsics.to_matrix())
+
 def test_compute_extrinsic_calculation():
 	# Build our sample points and intrinsics.
 	coplanar_points_on_z = numpy.random.uniform(low=-1, high=1, size=(8, 3))
@@ -81,6 +94,7 @@ def test_compute_extrinsic_calculation():
 	projection = known_extrinsics.project_points(coplanar_points_on_z, renormalize=True)
 	assert projection.shape[0] == coplanar_points_on_z.shape[0]
 	estimated_intrinsics, estimated_extrinsics = calibrate_camera_from_known_points(projection, coplanar_points_on_z)
+	estimated_intrinsics, estimated_extrinsics = refine_camera(projection, coplanar_points_on_z, estimated_intrinsics, estimated_extrinsics)
 	assert numpy.allclose(known_extrinsics.x_rotation, estimated_extrinsics.x_rotation)
 	assert numpy.allclose(known_extrinsics.y_rotation, estimated_extrinsics.y_rotation)
 	assert numpy.allclose(known_extrinsics.z_rotation, estimated_extrinsics.z_rotation)

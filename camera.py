@@ -67,7 +67,7 @@ class CameraExtrinsics:
 		projection = self.to_matrix()
 		if camera_intrinsics is not None:
 			projection = camera_intrinsics.to_matrix() @ projection
-		points_2d = (projection @ points_3d.T).T
+		points_2d = (projection @ points_3d.T).T  # Should be a 3xN matrix.
 
 		if renormalize:
 			points_2d[:, 0] /= points_2d[:, 2]
