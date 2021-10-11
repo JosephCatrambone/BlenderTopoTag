@@ -207,10 +207,10 @@ def estimate_extrinsic_from_homography(homography:Matrix, projected: Matrix, wor
 	pass
 
 
-def refine_camera(projected_points: Matrix, world_points: Matrix, intrinsic: CameraIntrinsics, extrinsic: CameraExtrinsics, max_iterations: int = 10000, epsilon: float = 1e-6, refine_k: bool = True, refine_rt: bool = True) -> Tuple[CameraIntrinsics, CameraExtrinsics]:
+def refine_camera(projected_points: Matrix, world_points: Matrix, intrinsic: CameraIntrinsics, extrinsic: CameraExtrinsics, max_iterations: int = 1000, epsilon: float = 1e-6, refine_k: bool = True, refine_rt: bool = True) -> Tuple[CameraIntrinsics, CameraExtrinsics]:
 	# Reproject the known 3d points and use the 2d error to tweak parameters.
 	# Configure initial state.
-	learning_rate = 0.9
+	learning_rate = 0.95
 	fx = intrinsic.focal_length_x
 	fy = intrinsic.focal_length_y
 	skew = intrinsic.skew

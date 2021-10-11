@@ -7,11 +7,100 @@ A plugin to extract topotags from video footage in Blender.
 import logging
 import numpy
 
+import bgl, bpy
+
+from debug import debug_show_tags
 from image_processing import blur, fast_downscale, resize_linear, Matrix
-from topotag import TopoTag, find_tags
+from topotag import find_tags
 
 logger = logging.getLogger(__file__)
 
+bl_info = {
+	"name": "Blender TopoTag",
+	"blender": (2, 90, 0),
+	"category": "Object",
+}
+
+
+class TopoTagTracker(bpy.types.Operator):
+	"""Topotag Fiducial Tracking"""
+	bl_idname = "object.topotag"
+	bl_label = "TopoTag Track"
+	bl_options = {"REGISTER", "UNDO"}
+
+	def execute(self, context):
+		import pydevd_pycharm
+		pydevd_pycharm.settrace('localhost', port=42069, stdoutToServer=True, stderrToServer=True)
+
+		scene = context.scene
+		cursor = scene.cursor.location
+		obj = object.active_object
+
+		# Push the state to restore user's setup.
+		scene_used_nodes = scene.use_nodes
+		scene_prev_render_width = scene.render.resolution_x
+		scene_prev_render_height = scene.render.resolution_y
+
+		# Set up our scene in a way that lets us render to the composition node and pull pixel data.
+		scene.use_nodes = True
+		anim_width = bpy.data.movieclips[0].size[0]
+		anim_height = bpy.data.movieclips[0].size[1]
+		scene.render.resolution_x = anim_width
+		scene.render.resolution_y = anim_height
+
+		# Create a preview node so we can directly pull the video data frames.
+		tree = scene.node_tree
+		nodes = tree.nodes
+		links = tree.links
+
+		for node in nodes:
+			nodes.remove(node)
+
+		render_layer_node = nodes.new('CompositorNodeRLayers')
+		viewer_node = nodes.new('CompositorNodeViewer')
+		links.new(viewer_node.inputs[0], render_layer_node.outputs[0])
+
+		# Allocate our empties and perhaps make a collection.
+		#bpy.ops.object.empty_add(type='CUBE', align='WORLD', location=(0, 0, 0), scale=(1, 1, 1))
+		#bpy.ops.object.move_to_collection(collection_index=- 1, is_new=False, new_collection_name='')
+		#bpy.ops.object.select_same_collection(collection='')
+
+
+		for frame_num in range(scene.frame_start, scene.frame_end):
+			#currentFrame = scene.frame_current
+			#bpy.data.scenes['Scene'].frame_set
+			scene.frame_set(frame_num)
+			bpy.ops.render.render(write_still=True)
+			pixels = numpy.asarray(bpy.data.images['Viewer Node'].pixels)
+			image = pixels.reshape((anim_width, anim_height, 4))
+			image = convert_pixels(image)
+
+			#
+
+		#buffer = bgl.Buffer(bgl.GL_BYTE, anim_width * anim_height * 4)
+		#bgl.glReadPixels(0, 0, anim_width, anim_height, bgl.GL_RGBA, bgl.GL_UNSIGNED_BYTE, buffer)
+
+		#scene.collection.objects.link(obj_new)
+		#obj_new.location = (obj.location * factor) + (cursor * (1.0 - factor))
+
+		# Undo our messing:
+		scene.use_nodes = scene_used_nodes
+		scene.render.resolution_x = scene_prev_render_width
+		scene.render.resolution_y = scene_prev_render_height
+		return {'FINISHED'}
+
+
+def menu_func(self, context):
+	self.layout.operator(TopoTagTracker.bl_idname)
+
+
+def register():
+	bpy.utils.register_class(TopoTagTracker)
+	bpy.types.CLIP_MT_track.append(TopoTagTracker)
+
+
+def unregister():
+	bpy.utils.unregister_class(TopoTagTracker)
 
 #
 # Workflow
@@ -38,6 +127,12 @@ def convert_image(img) -> Matrix:
 	dst /= dst.max() or 1.0
 	return dst
 
+def convert_pixels(img) -> Matrix:
+	dst = numpy.mean(img, axis=-1)
+	dst -= dst.min()
+	dst /= dst.max() or 1.0
+	return dst
+
 def make_threshold_map(input_matrix: Matrix) -> Matrix:  # -> grey image matrix
 	"""This is basically just blur."""
 	# Downscale by four.
@@ -54,8 +149,6 @@ def make_threshold_map(input_matrix: Matrix) -> Matrix:  # -> grey image matrix
 
 def get_animation_frame(idx):
 	"""Load video frame hack from S.O.  TODO: Credit author in title."""
-	import bpy
-
 	frameStart = 1
 	frameEnd = 155
 	frameStep = 50
@@ -98,72 +191,6 @@ def get_animation_frame(idx):
 # Helpers:
 #
 
-def debug_show(mat):
-	from PIL import Image
-	img = Image.fromarray(mat*255.0)
-	img.show()
-
-def debug_show_islands(classes, show=True):
-	from PIL import Image
-	import itertools
-	num_classes = classes.max()
-	class_colors = list(itertools.islice(itertools.product(list(range(64, 255, 1)), repeat=3), num_classes+1))
-	colored_image = Image.new('RGB', (classes.shape[1], classes.shape[0]))
-	# This is the wrong way to do it.  Should just cast + index.
-	for y in range(classes.shape[0]):
-		for x in range(classes.shape[1]):
-			colored_image.putpixel((x,y), class_colors[classes[y,x]])
-	if show:
-		colored_image.show()
-	return colored_image
-
-def debug_show_tags(tags, island_data, island_matrix, show=True):
-	from PIL import ImageDraw
-	# Render a color image for the island_matrix.
-	img = debug_show_islands(island_matrix, show=False)
-	canvas = ImageDraw.Draw(img)
-	# Draw some red borders for candidate islands.
-	#for island in island_data[2:]:
-	#	canvas.rectangle((island.x_min, island.y_min, island.x_max, island.y_max), outline=(255, 0, 0))
-	# Draw a pink border for each tag.
-	for tag in tags:
-		island_id = tag.island_id
-		for vertex in tag.vertex_positions:
-			canvas.rectangle((vertex[0]-1, vertex[1]-1, vertex[0]+1, vertex[1]+1), outline=(200, 200, 200))
-		canvas.text((island_data[island_id].x_min, island_data[island_id].y_min), f"I{island_id} - Code{tag.tag_id}", fill=(255, 255, 255))
-		canvas.rectangle((island_data[island_id].x_min, island_data[island_id].y_min, island_data[island_id].x_max, island_data[island_id].y_max), outline=(255, 0, 255))
-		canvas.line((tag.top_left[0], tag.top_left[1], tag.top_right[0], tag.top_right[1]), fill=(0, 255, 255))
-		canvas.line((tag.top_left[0], tag.top_left[1], tag.bottom_left[0], tag.bottom_left[1]), fill=(0, 255, 255))
-		#debug_render_cube(tag, canvas)
-		print(f"Tag origin: {tag.extrinsics.x_translation}, {tag.extrinsics.y_translation}, {tag.extrinsics.z_translation}")
-
-	if show:
-		img.show()
-	return img
-
-def debug_render_cube(tag: TopoTag, canvas):
-	"""Render a cube from the perspective of the camera."""
-	points_3d = numpy.asarray([
-		[0, 0, 0, 1],
-		[1, 0, 0, 1],
-		[1, 1, 0, 1],
-		[0, 1, 0, 1],
-		[0, 0, 1, 1],
-		[1, 0, 1, 1],
-		[1, 1, 1, 1],
-		[0, 1, 1, 1],
-	])
-	projection_matrix = tag.pose_raw # tag.extrinsics.to_matrix()
-	projection = (projection_matrix @ points_3d.T).T
-	projection[:, 0] /= projection[:, 2]
-	projection[:, 1] /= projection[:, 2]
-	#projection[:, 2] /= projection[:, 2]
-	# Draw faces...
-	for i in range(0, 4):
-		canvas.line((projection[i, 0], projection[i, 1], projection[(i+1)%4, 0], projection[(i+1)%4, 1]), fill=(255, 255, 255))
-		canvas.line((projection[(i+4), 0], projection[(i+4), 1], projection[(i+5)%8, 0], projection[(i+5)%8, 1]), fill=(255, 255, 255))
-	# Draw edges between faces (for the other faces)
-	print(projection)
 
 def main(image_filename: str = None, image = None):
 	print("Loading image...")
