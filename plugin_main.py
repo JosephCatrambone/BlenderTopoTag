@@ -76,14 +76,19 @@ class TopoTagTracker(bpy.types.Operator):
 		for node in nodes:
 			nodes.remove(node)
 
-		render_layer_node = nodes.new('CompositorNodeRLayers')
+		# The only way to extract pixel information from the current video is to attach the output to a renderer/viewer.
+		#render_layer_node = nodes.new('CompositorNodeRLayers')
+		clip_node = nodes.new('CompositionNodeMovieClip')
 		viewer_node = nodes.new('CompositorNodeViewer')
-		links.new(viewer_node.inputs[0], render_layer_node.outputs[0])
+		render_node = nodes.new('')
+		links.new(viewer_node.inputs[0], clip_node.outputs[0])
+		clip_node.clip = bpy.data.movieclips[0] #bpy.context.scene.node_tree.nodes[2].clip -> bpy.data.movieclips['topotag_fiducial_tracking_test_120fps_1080p.MP4']
 
 		# Allocate our empties and perhaps make a collection.
-		# This will create the object and make it active but not return a reference.
+		# This will create the object and make it active _but_ not return a reference, so we can't use it:
 		#bpy.ops.object.empty_add(type='CUBE', align='WORLD', location=(0, 0, 0), scale=(1, 1, 1))
 
+		# Have to separately add to collection, rather than using any of these:
 		#bpy.ops.object.move_to_collection(collection_index=- 1, is_new=False, new_collection_name='')
 		#bpy.ops.object.select_same_collection(collection='')
 
@@ -106,6 +111,7 @@ class TopoTagTracker(bpy.types.Operator):
 				scene_tag.rotation_euler = (-tag.extrinsics.x_rotation, -tag.extrinsics.y_rotation, -tag.extrinsics.z_rotation)
 				scene_tag.keyframe_insert(data_path="location", frame=frame_num)
 				scene_tag.keyframe_insert(data_path="rotation", frame=frame_num)
+			print(f"Found {len(tags)} tags in frame {frame_num}")
 		#scene.collection.objects.link(obj_new)
 
 		# Undo our messing:
@@ -155,25 +161,3 @@ def make_threshold_map(input_matrix: Matrix) -> Matrix:  # -> grey image matrix
 	threshold = resize_linear(blurred, input_matrix.shape[0], input_matrix.shape[1]) * 0.5
 	return threshold
 
-
-#
-# Helpers:
-#
-
-
-def main(image_filename: str = None, image = None):
-	print("Loading image...")
-	if image_filename:
-		img_mat = load_image(image_filename)
-	elif image:
-		img_mat = convert_image(image)
-	print("Finding tags...")
-	tags, island_data, island_pixels = find_tags(img_mat)
-	for t in tags:
-		print(t)
-	debug_show_tags(tags, island_data, island_pixels)
-
-
-if __name__ == '__main__':
-	#main(sys.argv[1])
-	register()

@@ -2,7 +2,7 @@
 import math
 import numpy
 import pytest
-from main import convert_image
+from plugin_main import convert_image
 from topotag import TopoTag, find_tags, binarize
 
 
