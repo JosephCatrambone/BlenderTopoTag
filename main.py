@@ -7,7 +7,7 @@ A plugin to extract topotags from video footage in Blender.
 import logging
 import numpy
 
-import bgl, bpy
+import bpy
 
 from debug import debug_show_tags
 from image_processing import blur, fast_downscale, resize_linear, Matrix
@@ -15,26 +15,46 @@ from topotag import find_tags
 
 logger = logging.getLogger(__file__)
 
-bl_info = {
-	"name": "Blender TopoTag",
-	"blender": (2, 90, 0),
-	"category": "Object",
-}
-
 
 class TopoTagTracker(bpy.types.Operator):
 	"""Topotag Fiducial Tracking"""
-	bl_idname = "object.topotag"
-	bl_label = "TopoTag Track"
-	bl_options = {"REGISTER", "UNDO"}
+	bl_idname = "tracking.track_topotags"
+	bl_label = "Track TopoTags"
+	bl_options = {"UNDO"}
+
+	tag_width: bpy.props.FloatProperty()
+
+	def __init__(self, *args, **kwargs):
+		super(TopoTagTracker, self).__init__(*args, **kwargs)
+		self.fiducial_objects = dict()
+		self.context = None
+
+	def create_or_fetch_fiducial(self, fid):
+		# Create and link a new fiducial in the fiducial collection if it exists OR create it and the collection.
+		if fid in self.fiducial_objects:
+			return self.fiducial_objects[fid]
+
+		empty_data = bpy.data.objects.new(f"Fiducial_{fid}", None)
+		empty_data.empty_display_size = 2
+		empty_data.empty_display_type = 'PLAIN_AXES'
+		bpy.context.scene.collection.objects.link(empty_data)
+		#self.context.view_layer.active_layer_collection.collection.objects.link(light_object)
+		#light_object.select_set(True)
+		#view_layer.objects.active = light_object
+		self.fiducial_objects[fid] = empty_data
+
+		return empty_data
+
+	def invoke(self, context, event):
+		#self.marker_size = event.mouse_y
+		#self.tag_width =
+		return self.execute(context)
 
 	def execute(self, context):
-		import pydevd_pycharm
-		pydevd_pycharm.settrace('localhost', port=42069, stdoutToServer=True, stderrToServer=True)
-
+		#import pydevd_pycharm
+		#pydevd_pycharm.settrace('localhost', port=42069, stdoutToServer=True, stderrToServer=True)
+		self.context = context
 		scene = context.scene
-		cursor = scene.cursor.location
-		obj = object.active_object
 
 		# Push the state to restore user's setup.
 		scene_used_nodes = scene.use_nodes
@@ -61,27 +81,32 @@ class TopoTagTracker(bpy.types.Operator):
 		links.new(viewer_node.inputs[0], render_layer_node.outputs[0])
 
 		# Allocate our empties and perhaps make a collection.
+		# This will create the object and make it active but not return a reference.
 		#bpy.ops.object.empty_add(type='CUBE', align='WORLD', location=(0, 0, 0), scale=(1, 1, 1))
+
 		#bpy.ops.object.move_to_collection(collection_index=- 1, is_new=False, new_collection_name='')
 		#bpy.ops.object.select_same_collection(collection='')
-
 
 		for frame_num in range(scene.frame_start, scene.frame_end):
 			#currentFrame = scene.frame_current
 			#bpy.data.scenes['Scene'].frame_set
 			scene.frame_set(frame_num)
+			# This will NOT work when run in the background.
+			# https://blender.stackexchange.com/questions/69230/python-render-script-different-outcome-when-run-in-background/81240#81240
 			bpy.ops.render.render(write_still=True)
 			pixels = numpy.asarray(bpy.data.images['Viewer Node'].pixels)
+			# buffer = bgl.Buffer(bgl.GL_BYTE, anim_width * anim_height * 4)
+			# bgl.glReadPixels(0, 0, anim_width, anim_height, bgl.GL_RGBA, bgl.GL_UNSIGNED_BYTE, buffer)
 			image = pixels.reshape((anim_width, anim_height, 4))
 			image = convert_pixels(image)
-
-			#
-
-		#buffer = bgl.Buffer(bgl.GL_BYTE, anim_width * anim_height * 4)
-		#bgl.glReadPixels(0, 0, anim_width, anim_height, bgl.GL_RGBA, bgl.GL_UNSIGNED_BYTE, buffer)
-
+			tags, _, _ = find_tags(image)
+			for tag in tags:
+				scene_tag = self.create_or_fetch_fiducial(fid=tag.tag_id)
+				scene_tag.location = (-tag.extrinsics.x_translation, -tag.extrinsics.y_translation, -tag.extrinsics.z_translation)
+				scene_tag.rotation_euler = (-tag.extrinsics.x_rotation, -tag.extrinsics.y_rotation, -tag.extrinsics.z_rotation)
+				scene_tag.keyframe_insert(data_path="location", frame=frame_num)
+				scene_tag.keyframe_insert(data_path="rotation", frame=frame_num)
 		#scene.collection.objects.link(obj_new)
-		#obj_new.location = (obj.location * factor) + (cursor * (1.0 - factor))
 
 		# Undo our messing:
 		scene.use_nodes = scene_used_nodes
@@ -89,18 +114,6 @@ class TopoTagTracker(bpy.types.Operator):
 		scene.render.resolution_y = scene_prev_render_height
 		return {'FINISHED'}
 
-
-def menu_func(self, context):
-	self.layout.operator(TopoTagTracker.bl_idname)
-
-
-def register():
-	bpy.utils.register_class(TopoTagTracker)
-	bpy.types.CLIP_MT_track.append(TopoTagTracker)
-
-
-def unregister():
-	bpy.utils.unregister_class(TopoTagTracker)
 
 #
 # Workflow
@@ -144,50 +157,6 @@ def make_threshold_map(input_matrix: Matrix) -> Matrix:  # -> grey image matrix
 
 
 #
-# Blender interface:
-#
-
-def get_animation_frame(idx):
-	"""Load video frame hack from S.O.  TODO: Credit author in title."""
-	frameStart = 1
-	frameEnd = 155
-	frameStep = 50
-	viewer_area = None
-	viewer_space = None
-
-	for area_search in bpy.context.screen.areas:
-		if viewer_area == None and area_search.type == 'IMAGE_EDITOR':
-			viewer_area = area_search
-			break
-
-	if viewer_area == None:
-		viewer_area = bpy.context.screen.areas[0]
-		viewer_area.type = "IMAGE_EDITOR"
-
-	for space in viewer_area.spaces:
-		if space.type == "IMAGE_EDITOR":
-			viewer_space = space
-
-	path = 'H:\\Data\\_blender\\Fluid\\Video_Edit.mov'
-	img = bpy.data.images.load(path)
-	w = img.size[0]
-	h = img.size[1]
-	viewer_space.image = img
-
-	frame = 1
-	for frame in range(frameStart, frameEnd, frameStep):
-		viewer_space.image_user.frame_offset = frame
-		# switch back and forth to force refresh
-		viewer_space.draw_channels = 'COLOR_ALPHA'
-		viewer_space.draw_channels = 'COLOR'
-		pixels = list(viewer_space.image.pixels)
-		tmp = bpy.data.images.new(name="sample" + str(frame), width=w, height=h, alpha=False, float_buffer=False)
-		tmp.pixels = pixels
-
-	img.user_clear()
-	bpy.data.images.remove(img)
-
-#
 # Helpers:
 #
 
@@ -204,5 +173,7 @@ def main(image_filename: str = None, image = None):
 		print(t)
 	debug_show_tags(tags, island_data, island_pixels)
 
-#if __name__ == '__main__':
-#	main(sys.argv[1])
+
+if __name__ == '__main__':
+	#main(sys.argv[1])
+	register()

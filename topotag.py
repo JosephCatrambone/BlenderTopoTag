@@ -1,11 +1,11 @@
 import math
 from dataclasses import dataclass
-from typing import Type, Tuple, Optional
+from typing import List, Type, Tuple, Optional
 
 import numpy
 
 from camera import CameraIntrinsics, CameraExtrinsics
-from computer_vision import calibrate_camera_from_known_points
+from computer_vision import calibrate_camera_from_known_points, refine_camera
 from island import flood_fill_connected
 from image_processing import Matrix
 
@@ -224,6 +224,7 @@ class TopoTag:
 		positions_3d = numpy.hstack([positions_2d, numpy.zeros(shape=(positions_2d.shape[0], 1))])# @ numpy.linalg.inv(camera_intrinsics.to_matrix())
 		# pos_2d is our 'projection'.  Pretend it exists at the origin in R3.
 		intrinsics, extrinsics = calibrate_camera_from_known_points(numpy.asarray(vertices), positions_3d)
+		intrinsics, extrinsics = refine_camera(positions_2d, positions_3d, intrinsics, extrinsics)
 
 		result = TopoTag(
 			code,
@@ -241,7 +242,7 @@ class TopoTag:
 		return result
 
 
-def find_tags(image: Matrix) -> (list, list, Matrix):
+def find_tags(image: Matrix) -> (List[Type[TopoTag]], list, Matrix):
 	"""Given a greyscale image matrix, return a tuple of (topotags, island data, connected component matrix)."""
 	binarized_image = binarize(image)
 	island_data, island_matrix = flood_fill_connected(binarized_image)
