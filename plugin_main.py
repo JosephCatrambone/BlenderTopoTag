@@ -9,7 +9,6 @@ import numpy
 
 import bpy
 
-from debug import debug_show_tags
 from image_processing import blur, fast_downscale, resize_linear, Matrix
 from topotag import find_tags
 
