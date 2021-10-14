@@ -3,7 +3,7 @@ import math
 import numpy
 import pytest
 from plugin_main import convert_image
-from topotag import TopoTag, find_tags, binarize
+from fiducial import TopoTag, find_tags, binarize
 
 
 def test_topotag_decode_k3():

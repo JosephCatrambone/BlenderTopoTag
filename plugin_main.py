@@ -10,7 +10,7 @@ import numpy
 import bpy
 
 from image_processing import blur, fast_downscale, resize_linear, Matrix
-from topotag import find_tags
+from fiducial import find_tags
 
 logger = logging.getLogger(__file__)
 

@@ -1,6 +1,6 @@
 import numpy
 
-from topotag import TopoTag
+from fiducial import TopoTag
 
 
 def debug_render_cube(tag: TopoTag, canvas):
