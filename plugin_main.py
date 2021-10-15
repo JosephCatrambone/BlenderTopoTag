@@ -6,9 +6,11 @@ A plugin to extract topotags from video footage in Blender.
 
 import logging
 import numpy
+import os
 
 import bpy
 
+from debug import save_plain_ppm
 from image_processing import blur, fast_downscale, resize_linear, Matrix
 from fiducial import find_tags
 
@@ -44,6 +46,41 @@ class TopoTagTracker(bpy.types.Operator):
 
 		return empty_data
 
+	def prep_frame_extraction(self):
+		"""We don't have an easy way to capture frames for the video, so we need to set up our scene."""
+		pass
+
+	def capture_frame(self, scene, frame_num, anim_width, anim_height):
+		# currentFrame = scene.frame_current
+		# bpy.data.scenes['Scene'].frame_set
+		scene.frame_set(frame_num)
+
+		# This will NOT work when run in the background.
+		# https://blender.stackexchange.com/questions/69230/python-render-script-different-outcome-when-run-in-background/81240#81240
+		bpy.ops.render.render(write_still=True)
+		pixels = numpy.asarray(bpy.data.images['Viewer Node'].pixels)
+
+		# Pixels are stored as a dense array of RGBA.
+		# Deinterlace the pixels.
+		pixels_red = pixels[0::4]
+		pixels_green = pixels[1::4]
+		pixels_blue = pixels[2::4]
+		pixels_alpha = pixels[3::4]
+		image = numpy.stack([pixels_red, pixels_green, pixels_blue], axis=1)  # All of them are linear, so axis=1.
+		assert len(image.shape) == 2
+		image = image.reshape((anim_height, anim_width, 3))  # HEIGHT FIRST!
+		image = convert_pixels(image)  # Make greyscale and normalize.
+		image = image[::-1, :] # Flip the image vertically because blender is upside down.
+		# os.remove(bpy.context.scene.render.frame_path(frame=frame_num))
+
+		# seq = bpy.data.scenes['Scene'].sequence_editor
+		# strip_name = seq.active_strip.name
+		# print(bpy.data.movieclips[strip_name].filepath)
+
+		# bpy.context.screen.areas[4].spaces[0].type == 'CLIP_EDITOR'
+		# bpy.context.screen.areas[5].spaces[0].type -> 'IMAGE_EDITOR'
+		return image
+
 	def invoke(self, context, event):
 		#self.marker_size = event.mouse_y
 		#self.tag_width =
@@ -57,11 +94,13 @@ class TopoTagTracker(bpy.types.Operator):
 
 		# Push the state to restore user's setup.
 		scene_used_nodes = scene.use_nodes
+		scene_prev_render_percent = scene.render.resolution_percentage
 		scene_prev_render_width = scene.render.resolution_x
 		scene_prev_render_height = scene.render.resolution_y
 
 		# Set up our scene in a way that lets us render to the composition node and pull pixel data.
 		scene.use_nodes = True
+		scene.render.resolution_percentage = 100
 		anim_width = bpy.data.movieclips[0].size[0]
 		anim_height = bpy.data.movieclips[0].size[1]
 		scene.render.resolution_x = anim_width
@@ -77,11 +116,12 @@ class TopoTagTracker(bpy.types.Operator):
 
 		# The only way to extract pixel information from the current video is to attach the output to a renderer/viewer.
 		#render_layer_node = nodes.new('CompositorNodeRLayers')
-		clip_node = nodes.new('CompositionNodeMovieClip')
+		clip_node = nodes.new('CompositorNodeMovieClip')
 		viewer_node = nodes.new('CompositorNodeViewer')
-		render_node = nodes.new('')
+		render_node = nodes.new('CompositorNodeOutputFile')
 		links.new(viewer_node.inputs[0], clip_node.outputs[0])
-		clip_node.clip = bpy.data.movieclips[0] #bpy.context.scene.node_tree.nodes[2].clip -> bpy.data.movieclips['topotag_fiducial_tracking_test_120fps_1080p.MP4']
+		links.new(render_node.inputs[0], clip_node.outputs[0])
+		clip_node.clip = bpy.data.movieclips[0]  #bpy.context.scene.node_tree.nodes[2].clip -> bpy.data.movieclips['topotag_fiducial_tracking_test_120fps_1080p.MP4']
 
 		# Allocate our empties and perhaps make a collection.
 		# This will create the object and make it active _but_ not return a reference, so we can't use it:
@@ -92,29 +132,21 @@ class TopoTagTracker(bpy.types.Operator):
 		#bpy.ops.object.select_same_collection(collection='')
 
 		for frame_num in range(scene.frame_start, scene.frame_end):
-			#currentFrame = scene.frame_current
-			#bpy.data.scenes['Scene'].frame_set
-			scene.frame_set(frame_num)
-			# This will NOT work when run in the background.
-			# https://blender.stackexchange.com/questions/69230/python-render-script-different-outcome-when-run-in-background/81240#81240
-			bpy.ops.render.render(write_still=True)
-			pixels = numpy.asarray(bpy.data.images['Viewer Node'].pixels)
-			# buffer = bgl.Buffer(bgl.GL_BYTE, anim_width * anim_height * 4)
-			# bgl.glReadPixels(0, 0, anim_width, anim_height, bgl.GL_RGBA, bgl.GL_UNSIGNED_BYTE, buffer)
-			image = pixels.reshape((anim_width, anim_height, 4))
-			image = convert_pixels(image)
+			image = self.capture_frame(scene, frame_num, anim_width, anim_height)
 			tags, _, _ = find_tags(image)
 			for tag in tags:
 				scene_tag = self.create_or_fetch_fiducial(fid=tag.tag_id)
-				scene_tag.location = (-tag.extrinsics.x_translation, -tag.extrinsics.y_translation, -tag.extrinsics.z_translation)
-				scene_tag.rotation_euler = (-tag.extrinsics.x_rotation, -tag.extrinsics.y_rotation, -tag.extrinsics.z_rotation)
-				scene_tag.keyframe_insert(data_path="location", frame=frame_num)
-				scene_tag.keyframe_insert(data_path="rotation", frame=frame_num)
+				if tag.intrinsics is not None and tag.extrinsics is not None:
+					scene_tag.location = (-tag.extrinsics.x_translation, -tag.extrinsics.y_translation, -tag.extrinsics.z_translation)
+					scene_tag.rotation_euler = (-tag.extrinsics.x_rotation, -tag.extrinsics.y_rotation, -tag.extrinsics.z_rotation)
+					scene_tag.keyframe_insert(data_path="location", frame=frame_num)
+					scene_tag.keyframe_insert(data_path="rotation", frame=frame_num)
 			print(f"Found {len(tags)} tags in frame {frame_num}")
 		#scene.collection.objects.link(obj_new)
 
 		# Undo our messing:
 		scene.use_nodes = scene_used_nodes
+		scene.render.resolution_percentage = scene_prev_render_percent
 		scene.render.resolution_x = scene_prev_render_width
 		scene.render.resolution_y = scene_prev_render_height
 		return {'FINISHED'}

@@ -3,6 +3,29 @@ import numpy
 from fiducial import TopoTag
 
 
+def save_plain_ppm(img, filename: str):
+	"""Save a matrix (floats) as a PPM image."""
+	with open(filename, 'wt') as fout:
+		fout.write("P3\n")
+		fout.write(f"{img.shape[1]} {img.shape[0]}\n")
+		fout.write("255\n")
+		idx = 0
+		for y in range(img.shape[0]):
+			for x in range(img.shape[1]):
+				fout.write(str(int(255 * img[y, x])))
+				fout.write(" ")
+				fout.write(str(int(255 * img[y, x])))
+				fout.write(" ")
+				fout.write(str(int(255 * img[y, x])))
+
+				if idx >= 5:  # Max line length is 70. 3 digits + space * 3 channels -> 12.  70/12 ~> 5.
+					fout.write("\n")
+					idx = 0
+				else:
+					fout.write(" ")
+					idx += 1
+		fout.flush()
+
 def debug_render_cube(tag: TopoTag, canvas):
 	"""Render a cube from the perspective of the camera."""
 	points_3d = numpy.asarray([

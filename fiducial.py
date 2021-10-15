@@ -1,3 +1,4 @@
+import logging
 import math
 from dataclasses import dataclass
 from typing import List, Type, Tuple, Optional
@@ -8,6 +9,8 @@ from camera import CameraIntrinsics, CameraExtrinsics
 from computer_vision import calibrate_camera_from_known_points, refine_camera
 from island import flood_fill_connected
 from image_processing import Matrix
+
+logger = logging.getLogger(__file__)
 
 
 @dataclass
@@ -223,15 +226,20 @@ class TopoTag:
 		positions_2d = numpy.asarray(TopoTag.generate_points(k_value))
 		positions_3d = numpy.hstack([positions_2d, numpy.zeros(shape=(positions_2d.shape[0], 1))])# @ numpy.linalg.inv(camera_intrinsics.to_matrix())
 		# pos_2d is our 'projection'.  Pretend it exists at the origin in R3.
-		intrinsics, extrinsics = calibrate_camera_from_known_points(numpy.asarray(vertices), positions_3d)
-		intrinsics, extrinsics = refine_camera(positions_2d, positions_3d, intrinsics, extrinsics)
+		try:
+			_, extrinsics = calibrate_camera_from_known_points(numpy.asarray(vertices), positions_3d)
+			camera_intrinsics, extrinsics = refine_camera(positions_2d, positions_3d, camera_intrinsics, extrinsics)
+		except Exception as exc:
+			logger.warning("Degenerate camera configuration: %s", exc)
+			camera_intrinsics = None
+			extrinsics = None
 
 		result = TopoTag(
 			code,
 			island_id,
 			k_value,
 			vertices,
-			intrinsics,
+			camera_intrinsics,
 			extrinsics,
 			baseline_horizontal_slope,
 			baseline_vertical_slope,

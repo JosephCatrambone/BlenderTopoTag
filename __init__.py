@@ -4,14 +4,12 @@ bl_info = {
 	"category": "Video Tools",
 }
 
-breakpoint()
-
 import sys, os
 
 # Plugin hacks to make the add-on register:
 path = os.path.dirname(__file__)
-#if path not in sys.path:
-#	sys.path.append(path)
+if path not in sys.path:
+	sys.path.append(path)
 
 if __name__ != "__main__":
 	module_name = __name__
