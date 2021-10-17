@@ -202,9 +202,36 @@ def homography_from_planar_projection_robust(projection: Matrix, world_plane: Ma
 	return homography
 
 
-def estimate_extrinsic_from_homography(homography:Matrix, projected: Matrix, world: Matrix) -> CameraExtrinsics:
+def decompose_homography(homography:Matrix, intrinsics:CameraIntrinsics) -> CameraExtrinsics:
 	"""Given a homography, projected points, and world-space points, estimate the camera extrinsics."""
-	pass
+	h1 = homography[:, 0:1]
+	h2 = homography[:, 1:2]
+	h3 = homography[:, 2:3]
+	intrinsics_inv = intrinsics.to_inverse_matrix()
+	h1_inv = intrinsics_inv @ h1  # 3x3 @ 3x1 -> 3x1
+	scale_lambda = sqrt(numpy.sum(h1_inv * h1_inv))  # Lit calls this lambda, but that's reserved.
+	if scale_lambda < 1e-6:
+		raise Exception("Homography cannot be decomposed.")
+	intrinsics_inv /= scale_lambda
+
+	# Normalized rotation:
+	r1 = intrinsics_inv @ h1
+	r2 = intrinsics_inv @ h2
+	# R3 is always orthonormal to R1 and R2.  Take cross.
+	r3 = numpy.cross(r1.T, r2.T).T
+
+	assert r1.shape[0] == 3
+
+	rotation = numpy.hstack([r1, r2, r3])  # TODO: Maybe transpose?
+
+	# Compute translation vector from inverse:
+	t = numpy.atleast_2d(intrinsics_inv @ h3)
+
+	# Refine solution by transforming to (Frobenius) orthonormal mat.
+	u, s, v = numpy.linalg.svd(rotation)
+	rotation = u @ v
+
+	return CameraExtrinsics.from_projection_matrix(numpy.hstack([rotation, t]))
 
 
 def refine_camera(projected_points: Matrix, world_points: Matrix, intrinsic: CameraIntrinsics, extrinsic: CameraExtrinsics, max_iterations: int = 1000, epsilon: float = 1e-6, refine_k: bool = True, refine_rt: bool = True) -> Tuple[CameraIntrinsics, CameraExtrinsics]:

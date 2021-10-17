@@ -2,9 +2,13 @@
 import math
 import numpy
 import pytest
-from computer_vision import calibrate_camera_from_known_points, refine_camera
+from computer_vision import calibrate_camera_from_known_points, refine_camera, decompose_homography, homography_from_planar_projection_basic
 from camera import CameraIntrinsics, CameraExtrinsics
 
+
+def rot_distance(a, b):
+	"""Return the 'difference' between a and b, assuming both are angles."""
+	return abs(math.cos(a) - math.cos(b))
 
 def test_projection_inline():
 	cam = CameraExtrinsics(0, 0, 0, 0, 0, 0)
@@ -38,7 +42,6 @@ def test_projection_rotate_about_z():
 	]))
 
 def test_projection():
-	cam_intrinsics = CameraIntrinsics(1, 1, 0, 0, 0)
 	cam_extrinsics = CameraExtrinsics(0, 0, 0, 0, 0, 1)
 	points_3d = numpy.asarray([
 		[0, 0, 0, 1],
@@ -70,6 +73,52 @@ def test_invert_transform():
 	points_2d = cam.project_points(points_3d)
 	unprojected = cam.unproject_points(points_2d, cam_intrinsics)
 	assert numpy.allclose(points_3d, unprojected)
+
+def test_homography_round_trip():
+	intrinsics = CameraIntrinsics(1, 1, 0, 0, 0)
+	points = numpy.asarray([
+		[0, 0],
+		[10, 0],
+		[0, 10],
+		[10, 10],
+		[2, 1],
+		[1, 2],
+		[5, 5],
+		[7, 9],
+		[9, 7],
+	])
+	camera_positions = [
+		(0, 0, 0),
+		(0, 0, -10),
+		(0, 0, 10),
+		(0, 3, 0),
+		(1, 0, 0),
+		(1, 5, 0),
+		(10, 5, 2),
+	]
+	camera_rotations = [
+		(0, 0, 0),
+		(-0.1, 0, 0),
+		(0.1, 0, 0),
+		(0, -0.1, 0),
+		(0, 0.1, 0),
+		(0, 0, -0.1),
+		(0, 0, 0.1),
+	]
+	for rx, ry, rz in camera_rotations:
+		for tx, ty, tz in camera_positions:
+			cam = CameraExtrinsics(rx, ry, rz, tx, ty, tz)
+			projection = cam.project_points(numpy.hstack([points, numpy.ones(shape=(points.shape[0], 1))]))
+			est_cam = decompose_homography(homography_from_planar_projection_basic(projection, points), intrinsics)
+			est_projection = est_cam.project_points(numpy.hstack([points, numpy.ones(shape=(points.shape[0], 1))]))
+			diff = projection - est_projection
+			#assert numpy.allclose(diff[:,0:2], numpy.zeros_like(projection[:,0:2]), rtol=1e-4, atol=1e-4)
+			assert rot_distance(est_cam.y_rotation, ry) < 1e-2
+			assert rot_distance(est_cam.z_rotation, rz) < 1e-2
+			assert abs(est_cam.x_translation - tx) < 1e-4
+			assert abs(est_cam.y_translation - ty) < 1e-4
+			#assert numpy.allclose(est_cam.z_translation, tz)
+			#assert numpy.allclose(est_cam.to_matrix(), cam.to_matrix())
 
 def test_refine_pose():
 	coplanar_points_on_z = numpy.random.uniform(low=-1, high=1, size=(16, 3))

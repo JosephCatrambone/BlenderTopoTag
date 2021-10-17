@@ -16,6 +16,24 @@ def test_to_euler_ident():
 	assert abs(y_rot) < 1e-6
 	assert abs(z_rot) < 1e-6
 
+def test_sample_output_a():
+	rot = RotationMatrix.to_matrix(-0.1, 0.2, 0.3)
+	expected = numpy.asarray([
+		[0.93, -0.31, 0.2],
+		[0.29, 0.95, 0.1],
+		[-0.22, -0.03, 0.98]
+	])
+	numpy.allclose(rot, expected)
+
+def test_sample_output_b():
+	rot = RotationMatrix.to_matrix(3.14, -1, 2)
+	expected = numpy.asarray([
+		[-0.23, -0.49, 0.84],
+		[-0.91, 0.42, 0.0],
+		[-0.35, -0.77, -0.54]
+	])
+	numpy.allclose(rot, expected)
+
 def test_from_euler_ident():
 	rot = RotationMatrix.to_matrix(0, 0, 0)
 	assert numpy.allclose(rot, numpy.eye(3))
