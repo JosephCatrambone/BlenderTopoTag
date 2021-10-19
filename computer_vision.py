@@ -94,8 +94,8 @@ def calibrate_camera_from_known_points(projection: Matrix, world: Matrix) -> (Ca
 	K /= K[2,2]
 
 	intrinsics = CameraIntrinsics(K[0, 0], K[1, 1], K[0, 1], K[0, 2], K[1, 2])
-	x_rot, y_rot, z_rot = RotationMatrix.to_euler(R)
-	extrinsics = CameraExtrinsics(x_rot, y_rot, z_rot, t[0], t[1], t[2])
+	rot = RotationMatrix.from_zyx_matrix(R)
+	extrinsics = CameraExtrinsics(rot.x, rot.y, rot.z, t[0], t[1], t[2])
 	return intrinsics, extrinsics
 
 

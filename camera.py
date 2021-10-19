@@ -88,7 +88,7 @@ class CameraExtrinsics:
 		if points_2d.shape[1] != 3:
 			raise Exception(f"Got points_2d array with unexpected shape: {points_2d.shape}")
 		points = camera_intrinsics.to_inverse_matrix() @ points_2d.T  # Points is now 3xn
-		rotation_matrix = RotationMatrix.to_matrix(self.x_rotation, self.y_rotation, self.z_rotation)
+		rotation_matrix = RotationMatrix(self.x_rotation, self.y_rotation, self.z_rotation).to_matrix()
 		# When multiplying by the 3x4 we rotate, then translate, so when we invert we un-translate, then rotate.
 		points[0, :] -= self.x_translation
 		points[1, :] -= self.y_translation
@@ -97,14 +97,14 @@ class CameraExtrinsics:
 
 	def to_matrix(self):
 		return numpy.hstack([
-			RotationMatrix.to_matrix(self.x_rotation, self.y_rotation, self.z_rotation),
+			RotationMatrix(self.x_rotation, self.y_rotation, self.z_rotation).to_matrix(),
 			numpy.asarray([[self.x_translation, self.y_translation, self.z_translation]]).T
 		])
 
 	def to_inverse_matrix(self):
 		"""Return the inverse of this operation."""
 		return numpy.hstack([
-			RotationMatrix.to_matrix(self.x_rotation, self.y_rotation, self.z_rotation).T,
+			RotationMatrix(self.x_rotation, self.y_rotation, self.z_rotation).to_matrix().T,
 			-numpy.asarray([[self.x_translation, self.y_translation, self.z_translation]]).T
 		])
 
@@ -113,5 +113,5 @@ class CameraExtrinsics:
 		assert projection.shape[0] == 3 and projection.shape[1] == 4
 		translation = projection[:,-1]
 		rotation = projection[0:3,0:3]
-		x_rot, y_rot, z_rot = RotationMatrix.to_euler(rotation)
-		return cls(x_rot, y_rot, z_rot, translation[0], translation[1], translation[2])
+		rotation = RotationMatrix.from_zyx_matrix(rotation)
+		return cls(rotation.x, rotation.y, rotation.z, translation[0], translation[1], translation[2])
