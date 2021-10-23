@@ -6,7 +6,7 @@ from typing import List, Type, Tuple, Optional
 import numpy
 
 from camera import CameraIntrinsics, CameraExtrinsics
-from computer_vision import calibrate_camera_from_known_points, refine_camera
+from computer_vision import perspective_matrix_from_known_points, refine_camera
 from island import flood_fill_connected
 from image_processing import Matrix
 
@@ -227,7 +227,7 @@ class TopoTag:
 		positions_3d = numpy.hstack([positions_2d, numpy.zeros(shape=(positions_2d.shape[0], 1))])# @ numpy.linalg.inv(camera_intrinsics.to_matrix())
 		# pos_2d is our 'projection'.  Pretend it exists at the origin in R3.
 		try:
-			_, extrinsics = calibrate_camera_from_known_points(numpy.asarray(vertices), positions_3d)
+			_, extrinsics = perspective_matrix_from_known_points(positions_3d, numpy.asarray(vertices))
 			camera_intrinsics, extrinsics = refine_camera(positions_2d, positions_3d, camera_intrinsics, extrinsics)
 		except Exception as exc:
 			logger.warning("Degenerate camera configuration: %s", exc)

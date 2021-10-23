@@ -7,9 +7,10 @@ from image_processing import Matrix
 from rotation import RotationMatrix
 
 
-def calibrate_camera_from_known_points(projection: Matrix, world: Matrix) -> (CameraIntrinsics, CameraExtrinsics):
+def perspective_matrix_from_known_points(world: Matrix, projected: Matrix) -> Matrix:
 	"""Compute the projection matrix from the projected image of the world coordinates."""
-	assert projection.shape[1] >= 2
+	# There's a bug in here.
+	assert projected.shape[1] >= 2
 	assert world.shape[1] >= 3
 	# s * [u', v', 1].T = [R | t] * [x, y, z, 1].T
 	#
@@ -31,13 +32,13 @@ def calibrate_camera_from_known_points(projection: Matrix, world: Matrix) -> (Ca
 	# [ 0, X.T, -y'*X.T ]   [ P2.T ]
 	#                       [ P3.T ]
 	# A                     x
-	homo_mat = numpy.zeros(shape=(projection.shape[0]*2, 12))
-	for i in range(projection.shape[0]):
+	homo_mat = numpy.zeros(shape=(projected.shape[0] * 2, 12))
+	for i in range(projected.shape[0]):
 		x = world[i, 0]
 		y = world[i, 1]
 		z = world[i, 2]
-		u = projection[i, 0]
-		v = projection[i, 1]
+		u = projected[i, 0]
+		v = projected[i, 1]
 		homo_mat[(i * 2), 0] = x
 		homo_mat[(i * 2), 1] = y
 		homo_mat[(i * 2), 2] = z
@@ -62,6 +63,10 @@ def calibrate_camera_from_known_points(projection: Matrix, world: Matrix) -> (Ca
 	#_, _, v = numpy.linalg.svd(homo_mat, full_matrices=False)
 	p = v[-1,:].reshape((3,4))
 
+	return p
+
+
+def decompose_projection_matrix(p: Matrix) -> (CameraIntrinsics, CameraExtrinsics):
 	# P = [p1, p2, p3, p4; p5, p6, p7, p8; p9, p10, p11, p12]
 	# R = [p1, p2, p3; p5, p6, p7; p9, p10, p11]
 	# t = [p4; p8; p12]
