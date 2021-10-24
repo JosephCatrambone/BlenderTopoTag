@@ -9,7 +9,7 @@ from rotation import RotationMatrix
 
 def perspective_matrix_from_known_points(world: Matrix, projected: Matrix) -> Matrix:
 	"""Compute the projection matrix from the projected image of the world coordinates."""
-	# There's a bug in here.
+	# There's a bug in here.  Seems like translation gets flipped on every axis.  Not rotation, though.
 	assert projected.shape[1] >= 2
 	assert world.shape[1] >= 3
 	# s * [u', v', 1].T = [R | t] * [x, y, z, 1].T
@@ -66,7 +66,9 @@ def perspective_matrix_from_known_points(world: Matrix, projected: Matrix) -> Ma
 	return p
 
 
-def decompose_projection_matrix(p: Matrix) -> (CameraIntrinsics, CameraExtrinsics):
+def decompose_projection_matrix(p: Matrix) -> (Matrix, Matrix, Matrix):
+	"""Return the intrinsic, rotation, and translation matrices from P."""
+	# Problem narrowed down to this method.
 	# P = [p1, p2, p3, p4; p5, p6, p7, p8; p9, p10, p11, p12]
 	# R = [p1, p2, p3; p5, p6, p7; p9, p10, p11]
 	# t = [p4; p8; p12]
@@ -75,33 +77,35 @@ def decompose_projection_matrix(p: Matrix) -> (CameraIntrinsics, CameraExtrinsic
 	# P = M| -Mc
 	# M = KR -> K is right-upper-triangular, R is orthogonal.  Get via RQ decomposigion.
 
+	pseudo_rot = p[0:3,0:3]
+
+	# Normalize P:
+	det_m = numpy.linalg.det(pseudo_rot)
+	if abs(det_m) < 1e-8:
+		raise Exception(f"Numerical stability error: det of perspective matrix is 0! ({abs(det_m)})")
+	elif det_m < 0:
+		p *= -1
+	# Else, p is positive, so no multiply.
+
+	# Estimate camera center. (Of K or of P?)
 	_, _, v = numpy.linalg.svd(p, full_matrices=False)
-	C = v[:,-1]
-	if abs(v[-1,-1]) > 1e-6:
-		C /= v[-1, -1]
+	camera_center = v[:,-1]
+	if abs(v[-1,-1]) < 1e-4:
+		#raise Exception(f"Camera center is ill conditioned: {v}, {camera_center}")
+		pass
+	else:
+		camera_center /= v[-1, -1]
 
-	M = p[0:3,0:3]
-
-	# Renormalize p by multiplying by sign(det(M)).
-	sign_det_m = 1
-	if numpy.linalg.det(M) < 0:
-		sign_det_m = -1
-	M *= sign_det_m
-	p *= sign_det_m
-
-	K_hat, R_hat = numpy.linalg.qr(M)
+	K_hat, R_hat = numpy.linalg.qr(pseudo_rot)
 	K_signs = numpy.sign(K_hat)
-	D = numpy.diag([K_signs[0,0], K_signs[1,1], K_signs[2,2]])
+	D = numpy.diag([K_signs[0,0], K_signs[1,1], K_signs[2,2]])  # Enforce positive-diagonal.
 	K = K_hat @ D
+	assert K[0,0] > 0 and K[1,1] > 0 and K[2,2] > 0
 	R = D @ R_hat
-	t = -R @ C
+	t = -R @ camera_center
 
-	K /= K[2,2]
-
-	intrinsics = CameraIntrinsics(K[0, 0], K[1, 1], K[0, 1], K[0, 2], K[1, 2])
-	rot = RotationMatrix.from_zyx_matrix(R)
-	extrinsics = CameraExtrinsics(rot.x, rot.y, rot.z, t[0], t[1], t[2])
-	return intrinsics, extrinsics
+	#K /= K[2,2]
+	return K, R, t
 
 
 def fundamental_from_correspondences(p: Matrix, q: Matrix) -> Matrix:
