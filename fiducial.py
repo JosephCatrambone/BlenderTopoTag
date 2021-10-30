@@ -1,5 +1,6 @@
 import logging
 import math
+import random
 from dataclasses import dataclass
 from typing import List, Type, Tuple, Optional
 
@@ -228,11 +229,17 @@ class TopoTag:
 		# pos_2d is our 'projection'.  Pretend it exists at the origin in R3.
 		try:
 			_, extrinsics = perspective_matrix_from_known_points(positions_3d, numpy.asarray(vertices))
-			camera_intrinsics, extrinsics = refine_camera(positions_2d, positions_3d, camera_intrinsics, extrinsics)
 		except Exception as exc:
 			logger.warning("Degenerate camera configuration: %s", exc)
-			camera_intrinsics = None
-			extrinsics = None
+			extrinsics = CameraExtrinsics(
+				random.uniform(-math.pi, math.pi),
+				random.uniform(-math.pi, math.pi),
+				random.uniform(-math.pi, math.pi),
+				random.uniform(-math.pi, math.pi),
+				random.uniform(-math.pi, math.pi),
+				random.uniform(-math.pi, math.pi)
+			)
+		camera_intrinsics, extrinsics = refine_camera(positions_2d, positions_3d, camera_intrinsics, extrinsics)
 
 		result = TopoTag(
 			code,

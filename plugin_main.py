@@ -19,16 +19,6 @@ from fiducial import find_tags
 logger = logging.getLogger(__file__)
 
 
-def process_frame(q_in, q_out):
-	# Pull a (image num, image matrix) tuple from q_in and push an (image num, [topotags] to q_out).
-	while True:
-		current_frame, image = q_in.get()
-		if image is None:
-			return
-		tags, _, _ = find_tags(image)
-		q_out.put([current_frame, tags])
-
-
 class TopoTagTracker(bpy.types.Operator):
 	"""Topotag Fiducial Tracking"""
 	bl_idname = "tracking.track_topotags"
@@ -41,11 +31,7 @@ class TopoTagTracker(bpy.types.Operator):
 		super(TopoTagTracker, self).__init__(*args, **kwargs)
 		self.fiducial_objects = dict()
 		self.context = None
-		self.image_queue = mp.Queue()
-		self.result_queue = mp.Queue()
-		self.process = mp.Process(target=process_frame, args=(self.image_queue, self.result_queue, ))
 		self.timer = None
-		self.current_frame = 0
 
 		# Store scene context at start.
 		self.starting_parameters = dict()
@@ -158,54 +144,43 @@ class TopoTagTracker(bpy.types.Operator):
 		return self.execute(context)
 
 	def execute(self, context):
-		context.window_manager.modal_handler_add(self)
-		self.timer = context.window_manager.event_timer_add(0.1, window=context.window)
+		#context.window_manager.modal_handler_add(self)
+		#self.timer = context.window_manager.event_timer_add(0.1, window=context.window)
 		self.prep_scene(context)
-		self.process.start()
-		return {'RUNNING_MODAL'}
+		self.run(context)
+		self.restore_scene(context)
+		#return {'RUNNING_MODAL'}
+		return {'FINISHED'}
 
-	def modal(self, context, event):
+	def run(self, context):
 		# Handle abort:
-		if event.type == 'ESC':
-			context.window_manager.event_timer_remove(self.timer)
-			self.process.kill()
-			return {'CANCELLED'}
-		elif event.type == 'TIMER':
-			# On the timer hit, try and process a frame.
-			scene = context.scene
-			if self.current_frame < scene.frame_end:
-				# Have we added any work?  If no, add some.
-				try:
-					if self.image_queue.empty():
-						scene.frame_set(self.current_frame)
-						image = self.capture_frame(scene, self.current_frame, scene.render.resolution_x, scene.render.resolution_y)
-						self.image_queue.put((self.current_frame, image))
-						self.current_frame += 1
-						return {'PASS_THROUGH'}
-				except queue.Full:
-					pass
-
-				# Do we have a result?
-				try:
-					res_frame, res_tags = self.result_queue.get_nowait()
-					scene.frame_set(res_frame)
-					for tag in res_tags:
-						scene_tag = self.create_or_fetch_fiducial(fid=tag.tag_id)
-						if tag.intrinsics is not None and tag.extrinsics is not None:
-							scene_tag.location = (
-							-tag.extrinsics.x_translation, -tag.extrinsics.y_translation, -tag.extrinsics.z_translation)
-							scene_tag.rotation_euler = (
-							-tag.extrinsics.x_rotation, -tag.extrinsics.y_rotation, -tag.extrinsics.z_rotation)
-							scene_tag.keyframe_insert(data_path="location", frame=res_frame)
-							scene_tag.keyframe_insert(data_path="rotation", frame=res_frame)
-					print(f"Found {len(res_tags)} tags in frame {res_frame}")
-				except queue.Empty:
-					pass
-				return {'PASS_THROUGH'}
-			#scene.collection.objects.link(obj_new)
-			self.image_queue.put((0, None))  # Signal end.
-			self.process.join(timeout=1000)
-			return {'FINISHED'}
+		#if event.type == 'ESC':
+		#	context.window_manager.event_timer_remove(self.timer)
+		#	return {'CANCELLED'}
+		#elif event.type == 'TIMER':
+		# On the timer hit, try and process a frame.
+		scene = context.scene
+		for current_frame in range(scene.frame_start, scene.frame_end):
+			# Have we added any work?  If no, add some.
+			#scene.frame_set(current_frame)
+			image = self.capture_frame(scene, current_frame, scene.render.resolution_x, scene.render.resolution_y)
+			#self.image_queue.put((self.current_frame, image))
+			tags, _, _ = find_tags(image)
+			for tag in tags:
+				print(f"Found tag {tag.tag_id} with extrinsic: {tag.extrinsics}")
+				scene_tag = self.create_or_fetch_fiducial(fid=tag.tag_id)
+				if tag.intrinsics is not None and tag.extrinsics is not None:
+					bpy.data.scenes["Scene"].frame_set(current_frame)
+					scene_tag.location = (-tag.extrinsics.x_translation, -tag.extrinsics.y_translation, -tag.extrinsics.z_translation)
+					scene_tag.rotation_euler = (-tag.extrinsics.x_rotation, -tag.extrinsics.y_rotation, -tag.extrinsics.z_rotation)
+					scene_tag.keyframe_insert(data_path="location", frame=current_frame)
+					scene_tag.keyframe_insert(data_path="rotation_euler", frame=current_frame)
+					#if moving_object.rotation_mode == "QUATERNION":
+					#	moving_object.keyframe_insert(data_path='rotation_quaternion')
+			print(f"Found {len(tags)} tags in frame {current_frame}")
+			#self.current_frame += 1
+		#return {'PASS_THROUGH'}
+		#return {'FINISHED'}
 
 
 #
