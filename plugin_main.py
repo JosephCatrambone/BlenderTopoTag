@@ -5,8 +5,10 @@ A plugin to extract topotags from video footage in Blender.
 """
 
 import logging
+import multiprocessing as mp
 import numpy
 import os
+import queue
 
 import bpy
 
@@ -15,6 +17,16 @@ from image_processing import blur, fast_downscale, resize_linear, Matrix
 from fiducial import find_tags
 
 logger = logging.getLogger(__file__)
+
+
+def process_frame(q_in, q_out):
+	# Pull a (image num, image matrix) tuple from q_in and push an (image num, [topotags] to q_out).
+	while True:
+		current_frame, image = q_in.get()
+		if image is None:
+			return
+		tags, _, _ = find_tags(image)
+		q_out.put([current_frame, tags])
 
 
 class TopoTagTracker(bpy.types.Operator):
@@ -29,6 +41,14 @@ class TopoTagTracker(bpy.types.Operator):
 		super(TopoTagTracker, self).__init__(*args, **kwargs)
 		self.fiducial_objects = dict()
 		self.context = None
+		self.image_queue = mp.Queue()
+		self.result_queue = mp.Queue()
+		self.process = mp.Process(target=process_frame, args=(self.image_queue, self.result_queue, ))
+		self.timer = None
+		self.current_frame = 0
+
+		# Store scene context at start.
+		self.starting_parameters = dict()
 
 	def create_or_fetch_fiducial(self, fid):
 		# Create and link a new fiducial in the fiducial collection if it exists OR create it and the collection.
@@ -46,9 +66,60 @@ class TopoTagTracker(bpy.types.Operator):
 
 		return empty_data
 
-	def prep_frame_extraction(self):
+	def prep_scene(self, context):
 		"""We don't have an easy way to capture frames for the video, so we need to set up our scene."""
-		pass
+		# import pydevd_pycharm
+		# pydevd_pycharm.settrace('localhost', port=42069, stdoutToServer=True, stderrToServer=True)
+		scene = context.scene
+
+		# Push the state to restore user's setup.
+		self.starting_parameters['scene_used_nodes'] = scene.use_nodes
+		self.starting_parameters['scene_prev_render_percent'] = scene.render.resolution_percentage
+		self.starting_parameters['scene_prev_render_width'] = scene.render.resolution_x
+		self.starting_parameters['scene_prev_render_height'] = scene.render.resolution_y
+
+		# Set up our scene in a way that lets us render to the composition node and pull pixel data.
+		scene.use_nodes = True
+		scene.render.resolution_percentage = 100
+		anim_width = bpy.data.movieclips[0].size[0]
+		anim_height = bpy.data.movieclips[0].size[1]
+		scene.render.resolution_x = anim_width
+		scene.render.resolution_y = anim_height
+
+		# Create a preview node so we can directly pull the video data frames.
+		tree = scene.node_tree
+		nodes = tree.nodes
+		links = tree.links
+
+		for node in nodes:
+			nodes.remove(node)
+
+		# The only way to extract pixel information from the current video is to attach the output to a renderer/viewer.
+		# render_layer_node = nodes.new('CompositorNodeRLayers')
+		clip_node = nodes.new('CompositorNodeMovieClip')
+		viewer_node = nodes.new('CompositorNodeViewer')
+		render_node = nodes.new('CompositorNodeOutputFile')
+		links.new(viewer_node.inputs[0], clip_node.outputs[0])
+		links.new(render_node.inputs[0], clip_node.outputs[0])
+		clip_node.clip = bpy.data.movieclips[0]  # bpy.context.scene.node_tree.nodes[2].clip -> bpy.data.movieclips['topotag_fiducial_tracking_test_120fps_1080p.MP4']
+
+		# Allocate our empties and perhaps make a collection.
+		# This will create the object and make it active _but_ not return a reference, so we can't use it:
+		# bpy.ops.object.empty_add(type='CUBE', align='WORLD', location=(0, 0, 0), scale=(1, 1, 1))
+
+		# Have to separately add to collection, rather than using any of these:
+		# bpy.ops.object.move_to_collection(collection_index=- 1, is_new=False, new_collection_name='')
+		# bpy.ops.object.select_same_collection(collection='')
+
+		self.current_frame = scene.frame_start
+
+	def restore_scene(self, context):
+		# Undo our messing:
+		scene = context.scene
+		scene.use_nodes = self.starting_parameters['scene_used_nodes']
+		scene.render.resolution_percentage = self.starting_parameters['scene_prev_render_percent']
+		scene.render.resolution_x = self.starting_parameters['scene_prev_render_width']
+		scene.render.resolution_y = self.starting_parameters['scene_prev_render_height']
 
 	def capture_frame(self, scene, frame_num, anim_width, anim_height):
 		# currentFrame = scene.frame_current
@@ -87,69 +158,54 @@ class TopoTagTracker(bpy.types.Operator):
 		return self.execute(context)
 
 	def execute(self, context):
-		#import pydevd_pycharm
-		#pydevd_pycharm.settrace('localhost', port=42069, stdoutToServer=True, stderrToServer=True)
-		self.context = context
-		scene = context.scene
+		context.window_manager.modal_handler_add(self)
+		self.timer = context.window_manager.event_timer_add(0.1, window=context.window)
+		self.prep_scene(context)
+		self.process.start()
+		return {'RUNNING_MODAL'}
 
-		# Push the state to restore user's setup.
-		scene_used_nodes = scene.use_nodes
-		scene_prev_render_percent = scene.render.resolution_percentage
-		scene_prev_render_width = scene.render.resolution_x
-		scene_prev_render_height = scene.render.resolution_y
+	def modal(self, context, event):
+		# Handle abort:
+		if event.type == 'ESC':
+			context.window_manager.event_timer_remove(self.timer)
+			self.process.kill()
+			return {'CANCELLED'}
+		elif event.type == 'TIMER':
+			# On the timer hit, try and process a frame.
+			scene = context.scene
+			if self.current_frame < scene.frame_end:
+				# Have we added any work?  If no, add some.
+				try:
+					if self.image_queue.empty():
+						scene.frame_set(self.current_frame)
+						image = self.capture_frame(scene, self.current_frame, scene.render.resolution_x, scene.render.resolution_y)
+						self.image_queue.put((self.current_frame, image))
+						self.current_frame += 1
+						return {'PASS_THROUGH'}
+				except queue.Full:
+					pass
 
-		# Set up our scene in a way that lets us render to the composition node and pull pixel data.
-		scene.use_nodes = True
-		scene.render.resolution_percentage = 100
-		anim_width = bpy.data.movieclips[0].size[0]
-		anim_height = bpy.data.movieclips[0].size[1]
-		scene.render.resolution_x = anim_width
-		scene.render.resolution_y = anim_height
-
-		# Create a preview node so we can directly pull the video data frames.
-		tree = scene.node_tree
-		nodes = tree.nodes
-		links = tree.links
-
-		for node in nodes:
-			nodes.remove(node)
-
-		# The only way to extract pixel information from the current video is to attach the output to a renderer/viewer.
-		#render_layer_node = nodes.new('CompositorNodeRLayers')
-		clip_node = nodes.new('CompositorNodeMovieClip')
-		viewer_node = nodes.new('CompositorNodeViewer')
-		render_node = nodes.new('CompositorNodeOutputFile')
-		links.new(viewer_node.inputs[0], clip_node.outputs[0])
-		links.new(render_node.inputs[0], clip_node.outputs[0])
-		clip_node.clip = bpy.data.movieclips[0]  #bpy.context.scene.node_tree.nodes[2].clip -> bpy.data.movieclips['topotag_fiducial_tracking_test_120fps_1080p.MP4']
-
-		# Allocate our empties and perhaps make a collection.
-		# This will create the object and make it active _but_ not return a reference, so we can't use it:
-		#bpy.ops.object.empty_add(type='CUBE', align='WORLD', location=(0, 0, 0), scale=(1, 1, 1))
-
-		# Have to separately add to collection, rather than using any of these:
-		#bpy.ops.object.move_to_collection(collection_index=- 1, is_new=False, new_collection_name='')
-		#bpy.ops.object.select_same_collection(collection='')
-
-		for frame_num in range(scene.frame_start, scene.frame_end):
-			image = self.capture_frame(scene, frame_num, anim_width, anim_height)
-			tags, _, _ = find_tags(image)
-			for tag in tags:
-				scene_tag = self.create_or_fetch_fiducial(fid=tag.tag_id)
-				if tag.intrinsics is not None and tag.extrinsics is not None:
-					scene_tag.location = (-tag.extrinsics.x_translation, -tag.extrinsics.y_translation, -tag.extrinsics.z_translation)
-					scene_tag.rotation_euler = (-tag.extrinsics.x_rotation, -tag.extrinsics.y_rotation, -tag.extrinsics.z_rotation)
-					scene_tag.keyframe_insert(data_path="location", frame=frame_num)
-					scene_tag.keyframe_insert(data_path="rotation", frame=frame_num)
-			print(f"Found {len(tags)} tags in frame {frame_num}")
-		#scene.collection.objects.link(obj_new)
-
-		# Undo our messing:
-		scene.use_nodes = scene_used_nodes
-		scene.render.resolution_percentage = scene_prev_render_percent
-		scene.render.resolution_x = scene_prev_render_width
-		scene.render.resolution_y = scene_prev_render_height
-		return {'FINISHED'}
+				# Do we have a result?
+				try:
+					res_frame, res_tags = self.result_queue.get_nowait()
+					scene.frame_set(res_frame)
+					for tag in res_tags:
+						scene_tag = self.create_or_fetch_fiducial(fid=tag.tag_id)
+						if tag.intrinsics is not None and tag.extrinsics is not None:
+							scene_tag.location = (
+							-tag.extrinsics.x_translation, -tag.extrinsics.y_translation, -tag.extrinsics.z_translation)
+							scene_tag.rotation_euler = (
+							-tag.extrinsics.x_rotation, -tag.extrinsics.y_rotation, -tag.extrinsics.z_rotation)
+							scene_tag.keyframe_insert(data_path="location", frame=res_frame)
+							scene_tag.keyframe_insert(data_path="rotation", frame=res_frame)
+					print(f"Found {len(res_tags)} tags in frame {res_frame}")
+				except queue.Empty:
+					pass
+				return {'PASS_THROUGH'}
+			#scene.collection.objects.link(obj_new)
+			self.image_queue.put((0, None))  # Signal end.
+			self.process.join(timeout=1000)
+			return {'FINISHED'}
 
 
 #
