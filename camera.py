@@ -109,9 +109,7 @@ class CameraExtrinsics:
 		])
 
 	@classmethod
-	def from_projection_matrix(cls, projection: Matrix):
-		assert projection.shape[0] == 3 and projection.shape[1] == 4
-		translation = projection[:,-1]
-		rotation = projection[0:3,0:3]
-		rotation = RotationMatrix.from_zyx_matrix(rotation)
-		return cls(rotation.x, rotation.y, rotation.z, translation[0], translation[1], translation[2])
+	def from_rotation_and_translation(cls, rotation:Matrix, translation:Matrix):
+		translation = translation.reshape(-1)
+		rot = RotationMatrix.from_zyx_matrix(rotation)
+		return cls(rot.x, rot.y, rot.z, translation[0], translation[1], translation[2])

@@ -1,25 +1,69 @@
 import math
+import random
+
 import numpy
 import pytest
-from computer_vision import perspective_matrix_from_known_points, refine_camera, decompose_homography, homography_from_planar_projection_basic, decompose_projection_matrix
+from computer_vision import perspective_matrix_from_known_points, refine_camera, decompose_homography, \
+	homography_from_planar_projection_basic, decompose_projection_matrix, decompose_homography_svd
 from camera import CameraIntrinsics, CameraExtrinsics
+from rotation import RotationMatrix
 
 def rot_distance(a, b):
 	"""Return the 'difference' between a and b, assuming both are angles."""
 	return abs(math.cos(a) - math.cos(b))
 
-def test_homography_round_trip():
-	intrinsics = CameraIntrinsics(1, 1, 0, 0, 0)
+def test_homography_identity():
 	points = numpy.asarray([
 		[0, 0],
 		[10, 0],
 		[0, 10],
 		[10, 10],
-		[2, 1],
-		[1, 2],
-		[5, 5],
-		[7, 9],
-		[9, 7],
+		[2, 3],
+		[3, 2],
+		[4, 4],
+		[11, 1],
+	])
+	cam = CameraExtrinsics(0, 0, 0, 0, 0, 0)
+	projection = cam.project_points(numpy.hstack([points, numpy.ones(shape=(points.shape[0], 1))]))
+	h = homography_from_planar_projection_basic(points, projection)
+	assert numpy.allclose(h, numpy.eye(3))
+
+def test_homography_randomized():
+	for _ in range(100):
+		# Build points...
+		coplanar_points_on_z = numpy.random.uniform(low=-1, high=1, size=(16, 3))
+		coplanar_points_on_z[:, 2] = 1.0
+		# Build rotation part of homography.
+		rand_homography = RotationMatrix.x_rotation(random.random()*math.pi*2) @ RotationMatrix.y_rotation(random.random()*math.pi*2)
+		# Add translation component.
+		rand_homography[0,-1] = random.uniform(-10, 10)
+		rand_homography[1,-1] = random.uniform(-10, 10)
+		rand_homography[2,-1] = random.uniform(-10, 10)
+		rand_homography /= rand_homography[-1, -1]
+		# Project and normalize points.
+		projected = (rand_homography @ coplanar_points_on_z.T).T
+		projected[:,0] /= projected[:,2]
+		projected[:,1] /= projected[:,2]
+		projected[:,2] /= projected[:,2]
+		# Compute
+		our_homography = homography_from_planar_projection_basic(coplanar_points_on_z, projected)
+		#cv_homography = cv2.estimateAffine3D(coplanar_points_on_z, projected)[1][0:3, 0:3]
+		# Evaluate
+		assert our_homography == pytest.approx(rand_homography)
+		#assert numpy.allclose(our_homography, cv_homography)
+
+def test_homography_round_trip():
+	intrinsics = CameraIntrinsics(1, 1, 0, 0, 0)
+	points = numpy.asarray([
+		[0, 0, -1],
+		[10, 0, -1],
+		[0, 10, -1],
+		[10, 10, -1],
+		[2, 1, -1],
+		[1, 2, -1],
+		[5, 5, -1],
+		[7, 9, -1],
+		[9, 7, -1],
 	])
 	camera_positions = [
 		(0, 0, 0),
@@ -42,17 +86,22 @@ def test_homography_round_trip():
 	for rx, ry, rz in camera_rotations:
 		for tx, ty, tz in camera_positions:
 			cam = CameraExtrinsics(rx, ry, rz, tx, ty, tz)
-			projection = cam.project_points(numpy.hstack([points, numpy.ones(shape=(points.shape[0], 1))]))
-			est_cam = decompose_homography(homography_from_planar_projection_basic(projection, points), intrinsics)
-			est_projection = est_cam.project_points(numpy.hstack([points, numpy.ones(shape=(points.shape[0], 1))]))
+			projection = cam.project_points(numpy.hstack([points, numpy.ones(shape=(points.shape[0], 1))]), renormalize=True)[:,0:2]
+			h = homography_from_planar_projection_basic(points, projection)
+			rotation, translation = decompose_homography_svd(h, intrinsics)
+			est_projection_matrix = numpy.zeros(shape=(4,4))
+			est_projection_matrix[0:3,0:3] = rotation
+			est_projection_matrix[0:3,3] = translation[:,0]
+			est_projection_matrix[3,3] = 1
+			est_projection = (est_projection_matrix @ numpy.hstack([points, numpy.ones(shape=(points.shape[0], 1))]).T).T
+			est_projection[:,0] /= est_projection[:, 3]
+			est_projection[:,1] /= est_projection[:, 3]
+			est_projection = est_projection[:,0:2]
 			diff = projection - est_projection
 			#assert numpy.allclose(diff[:,0:2], numpy.zeros_like(projection[:,0:2]), rtol=1e-4, atol=1e-4)
-			assert rot_distance(est_cam.y_rotation, ry) < 1e-2
-			assert rot_distance(est_cam.z_rotation, rz) < 1e-2
-			assert abs(est_cam.x_translation - tx) < 1e-4
-			assert abs(est_cam.y_translation - ty) < 1e-4
-			#assert numpy.allclose(est_cam.z_translation, tz)
-			#assert numpy.allclose(est_cam.to_matrix(), cam.to_matrix())
+			# Translation of the camera moves it in the opposite direction.
+			assert translation[0,0] == pytest.approx(tx)
+			assert translation[1,0] == pytest.approx(ty)
 
 def test_refine_pose():
 	coplanar_points_on_z = numpy.random.uniform(low=-1, high=1, size=(16, 3))
@@ -63,7 +112,7 @@ def test_refine_pose():
 	projection = target_extrinsics.project_points(coplanar_points_on_z, target_intrinsics, renormalize=True)
 	estimated_intrinsics = CameraIntrinsics(1.0, 1.0, 0.0, 1, 1)
 	estimated_extrinsics = CameraExtrinsics(0.1, -0.1, 0.1, -0.1, 0.1, 2.0)
-	estimated_intrinsics, estimated_extrinsics = refine_camera(projection, coplanar_points_on_z, estimated_intrinsics, estimated_extrinsics, refine_k=False, refine_rt=True)
+	estimated_intrinsics, estimated_extrinsics = refine_camera(projection, coplanar_points_on_z, estimated_intrinsics, estimated_extrinsics, refine_k=False, refine_rt=True, max_iterations=2000)
 	#assert numpy.allclose(target_intrinsics.to_matrix(), estimated_intrinsics.to_matrix())
 	assert numpy.allclose(target_extrinsics.to_matrix(), estimated_extrinsics.to_matrix(), rtol=0.4, atol=0.5)
 

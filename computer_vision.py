@@ -6,12 +6,21 @@ from camera import CameraIntrinsics, CameraExtrinsics
 from image_processing import Matrix
 from rotation import RotationMatrix
 
+def magnitude(vec):
+	return sqrt(numpy.sum(vec * vec))
+
+def normalize(vec):
+	return vec / magnitude(vec)
 
 def perspective_matrix_from_known_points(world: Matrix, projected: Matrix) -> Matrix:
-	"""Compute the projection matrix from the projected image of the world coordinates."""
+	"""Compute the projection matrix from the projected image of the world coordinates.
+	Note that this has a rank deficiency if the world points are all coplanar, so we need to use homography for that case.
+	"""
 	# There's a bug in here.  Seems like translation gets flipped on every axis.  Not rotation, though.
 	assert projected.shape[1] >= 2
 	assert world.shape[1] >= 3
+	if numpy.any(world.min(axis=0) == world.max(axis=0)):
+		raise Exception("Rank deficiency. Can't compute projection matrix from coplanar points. Use homography.")
 	# s * [u', v', 1].T = [R | t] * [x, y, z, 1].T
 	#
 	#   0  1  2  3  4  5  6  7    8     9     10   11
@@ -77,9 +86,13 @@ def decompose_projection_matrix(p: Matrix) -> (Matrix, Matrix, Matrix):
 	# P = M| -Mc
 	# M = KR -> K is right-upper-triangular, R is orthogonal.  Get via RQ decomposigion.
 
+	# P = K[R|-RC]
+	# K = intrinsics, R = inviertible pseudo-rot matric whose columns = world axes in camera ref frame. C = camera center in world coords.
+
 	pseudo_rot = p[0:3,0:3]
 
 	# Normalize P:
+	# This assumes that our camera looks in the positive Z direction AND that the image's X/Y point in the same direction as the camera X/Y.  Dunno about #2.
 	det_m = numpy.linalg.det(pseudo_rot)
 	if abs(det_m) < 1e-8:
 		raise Exception(f"Numerical stability error: det of perspective matrix is 0! ({abs(det_m)})")
@@ -136,7 +149,7 @@ def fundamental_from_correspondences(p: Matrix, q: Matrix) -> Matrix:
 	return fundamental
 
 
-def homography_from_planar_projection_basic(projection: Matrix, world_plane: Matrix) -> Matrix:
+def homography_from_planar_projection_basic(world_plane: Matrix, projection: Matrix) -> Matrix:
 	"""Compute the 3x3 homography matrix with h33 == 1.0, assuming world_plane is on the plane xy-plane with z=0."""
 	assert projection.shape[0] == world_plane.shape[0]
 
@@ -211,7 +224,7 @@ def homography_from_planar_projection_robust(projection: Matrix, world_plane: Ma
 	return homography
 
 
-def decompose_homography(homography:Matrix, intrinsics:CameraIntrinsics) -> CameraExtrinsics:
+def decompose_homography_svd(homography:Matrix, intrinsics:CameraIntrinsics) -> (Matrix, Matrix):
 	"""Given a homography, projected points, and world-space points, estimate the camera extrinsics."""
 	h1 = homography[:, 0:1]
 	h2 = homography[:, 1:2]
@@ -224,8 +237,8 @@ def decompose_homography(homography:Matrix, intrinsics:CameraIntrinsics) -> Came
 	intrinsics_inv /= scale_lambda
 
 	# Normalized rotation:
-	r1 = intrinsics_inv @ h1
-	r2 = intrinsics_inv @ h2
+	r1 = normalize(intrinsics_inv @ h1)
+	r2 = normalize(intrinsics_inv @ h2)
 	# R3 is always orthonormal to R1 and R2.  Take cross.
 	r3 = numpy.cross(r1.T, r2.T).T
 
@@ -234,19 +247,23 @@ def decompose_homography(homography:Matrix, intrinsics:CameraIntrinsics) -> Came
 	rotation = numpy.hstack([r1, r2, r3])  # TODO: Maybe transpose?
 
 	# Compute translation vector from inverse:
-	t = numpy.atleast_2d(intrinsics_inv @ h3)
+	t = 2*numpy.atleast_2d(intrinsics_inv @ h3) / (magnitude(h1) + magnitude(h2))
 
 	# Refine solution by transforming to (Frobenius) orthonormal mat.
-	u, s, v = numpy.linalg.svd(rotation)
-	rotation = u @ v
+	#u, s, v = numpy.linalg.svd(rotation)
+	#rotation = u @ v
 
-	return CameraExtrinsics.from_projection_matrix(numpy.hstack([rotation, t]))
+	return rotation, t
 
+def decompose_homography(homography:Matrix) -> (Matrix, Matrix):
+	"""From "Deeper Understanding of The Homography Decomposition for Vision-Based Control."""
+	s = (homography @ homography.T) - numpy.eye(3)
+	# If all of the components of S become zero, it's the purely rotational case for this matrix and we need special handling.
+	pass
 
-def refine_camera(projected_points: Matrix, world_points: Matrix, intrinsic: CameraIntrinsics, extrinsic: CameraExtrinsics, max_iterations: int = 1000, epsilon: float = 1e-6, refine_k: bool = True, refine_rt: bool = True) -> Tuple[CameraIntrinsics, CameraExtrinsics]:
+def refine_camera(projected_points: Matrix, world_points: Matrix, intrinsic: CameraIntrinsics, extrinsic: CameraExtrinsics, max_iterations: int = 1000, epsilon: float = 1e-6, refine_k: bool = True, refine_rt: bool = True, step_scalar=0.95) -> Tuple[CameraIntrinsics, CameraExtrinsics]:
 	# Reproject the known 3d points and use the 2d error to tweak parameters.
 	# Configure initial state.
-	learning_rate = 0.95
 	fx = intrinsic.focal_length_x
 	fy = intrinsic.focal_length_y
 	skew = intrinsic.skew
@@ -299,17 +316,17 @@ def refine_camera(projected_points: Matrix, world_points: Matrix, intrinsic: Cam
 				dtx += fx*(-px + (center_x*tz + fx*tx + skew*ty + x*(center_x*sin(ry)*cos(rx) + fx*(-sin(rx)*sin(rz) + cos(rx)*cos(ry)*cos(rz)) + skew*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_x*sin(rx)*sin(ry) + fx*(sin(rx)*cos(ry)*cos(rz) + sin(rz)*cos(rx)) + skew*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_x*cos(ry) - fx*sin(ry)*cos(rz) + skew*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))/(sqrt((-px + (center_x*tz + fx*tx + skew*ty + x*(center_x*sin(ry)*cos(rx) + fx*(-sin(rx)*sin(rz) + cos(rx)*cos(ry)*cos(rz)) + skew*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_x*sin(rx)*sin(ry) + fx*(sin(rx)*cos(ry)*cos(rz) + sin(rz)*cos(rx)) + skew*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_x*cos(ry) - fx*sin(ry)*cos(rz) + skew*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))**2 + (-py + (center_y*tz + fy*ty + x*(center_y*sin(ry)*cos(rx) + fy*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_y*sin(rx)*sin(ry) + fy*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_y*cos(ry) + fy*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))**2)*(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))
 				dty += (fy*(-py + (center_y*tz + fy*ty + x*(center_y*sin(ry)*cos(rx) + fy*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_y*sin(rx)*sin(ry) + fy*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_y*cos(ry) + fy*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)) + skew*(-px + (center_x*tz + fx*tx + skew*ty + x*(center_x*sin(ry)*cos(rx) + fx*(-sin(rx)*sin(rz) + cos(rx)*cos(ry)*cos(rz)) + skew*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_x*sin(rx)*sin(ry) + fx*(sin(rx)*cos(ry)*cos(rz) + sin(rz)*cos(rx)) + skew*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_x*cos(ry) - fx*sin(ry)*cos(rz) + skew*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))/sqrt((-px + (center_x*tz + fx*tx + skew*ty + x*(center_x*sin(ry)*cos(rx) + fx*(-sin(rx)*sin(rz) + cos(rx)*cos(ry)*cos(rz)) + skew*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_x*sin(rx)*sin(ry) + fx*(sin(rx)*cos(ry)*cos(rz) + sin(rz)*cos(rx)) + skew*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_x*cos(ry) - fx*sin(ry)*cos(rz) + skew*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))**2 + (-py + (center_y*tz + fy*ty + x*(center_y*sin(ry)*cos(rx) + fy*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_y*sin(rx)*sin(ry) + fy*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_y*cos(ry) + fy*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))**2)
 				dtz += ((-px + (center_x*tz + fx*tx + skew*ty + x*(center_x*sin(ry)*cos(rx) + fx*(-sin(rx)*sin(rz) + cos(rx)*cos(ry)*cos(rz)) + skew*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_x*sin(rx)*sin(ry) + fx*(sin(rx)*cos(ry)*cos(rz) + sin(rz)*cos(rx)) + skew*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_x*cos(ry) - fx*sin(ry)*cos(rz) + skew*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))*(2*center_x/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)) - 2*(center_x*tz + fx*tx + skew*ty + x*(center_x*sin(ry)*cos(rx) + fx*(-sin(rx)*sin(rz) + cos(rx)*cos(ry)*cos(rz)) + skew*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_x*sin(rx)*sin(ry) + fx*(sin(rx)*cos(ry)*cos(rz) + sin(rz)*cos(rx)) + skew*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_x*cos(ry) - fx*sin(ry)*cos(rz) + skew*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry))**2)/2 + (-py + (center_y*tz + fy*ty + x*(center_y*sin(ry)*cos(rx) + fy*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_y*sin(rx)*sin(ry) + fy*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_y*cos(ry) + fy*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))*(2*center_y/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)) - 2*(center_y*tz + fy*ty + x*(center_y*sin(ry)*cos(rx) + fy*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_y*sin(rx)*sin(ry) + fy*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_y*cos(ry) + fy*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry))**2)/2)/sqrt((-px + (center_x*tz + fx*tx + skew*ty + x*(center_x*sin(ry)*cos(rx) + fx*(-sin(rx)*sin(rz) + cos(rx)*cos(ry)*cos(rz)) + skew*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_x*sin(rx)*sin(ry) + fx*(sin(rx)*cos(ry)*cos(rz) + sin(rz)*cos(rx)) + skew*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_x*cos(ry) - fx*sin(ry)*cos(rz) + skew*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))**2 + (-py + (center_y*tz + fy*ty + x*(center_y*sin(ry)*cos(rx) + fy*(-sin(rx)*cos(rz) - sin(rz)*cos(rx)*cos(ry))) + y*(center_y*sin(rx)*sin(ry) + fy*(-sin(rx)*sin(rz)*cos(ry) + cos(rx)*cos(rz))) + z*(center_y*cos(ry) + fy*sin(ry)*sin(rz)))/(tz + x*sin(ry)*cos(rx) + y*sin(rx)*sin(ry) + z*cos(ry)))**2)
-		fx -= (dfx/projected_points.shape[0]) * (learning_rate/iter)
-		fy -= (dfy / projected_points.shape[0]) * (learning_rate/iter)
-		skew -= (dskew / projected_points.shape[0]) * (learning_rate/iter)
-		dcenter_x -= (dcenter_x / projected_points.shape[0]) * (learning_rate/iter)
-		dcenter_y -= (dcenter_y / projected_points.shape[0]) * (learning_rate/iter)
-		rx -= (drx / projected_points.shape[0]) * learning_rate
-		ry -= (dry / projected_points.shape[0]) * learning_rate
-		rz -= (drz / projected_points.shape[0]) * learning_rate
-		tx -= (dtx / projected_points.shape[0]) * learning_rate
-		ty -= (dty / projected_points.shape[0]) * learning_rate
-		tz -= (dtz / projected_points.shape[0]) * learning_rate
+		fx -= (dfx/projected_points.shape[0]) * (step_scalar/iter)
+		fy -= (dfy / projected_points.shape[0]) * (step_scalar/iter)
+		skew -= (dskew / projected_points.shape[0]) * (step_scalar/iter)
+		dcenter_x -= (dcenter_x / projected_points.shape[0]) * (step_scalar/iter)
+		dcenter_y -= (dcenter_y / projected_points.shape[0]) * (step_scalar/iter)
+		rx -= (drx / projected_points.shape[0]) * step_scalar
+		ry -= (dry / projected_points.shape[0]) * step_scalar
+		rz -= (drz / projected_points.shape[0]) * step_scalar
+		tx -= (dtx / projected_points.shape[0]) * step_scalar
+		ty -= (dty / projected_points.shape[0]) * step_scalar
+		tz -= (dtz / projected_points.shape[0]) * step_scalar
 	return CameraIntrinsics(fx, fy, skew, center_x, center_y), CameraExtrinsics(rx, ry, rz, tx, ty, tz)
 
 
