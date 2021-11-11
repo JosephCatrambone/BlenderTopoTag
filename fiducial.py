@@ -231,14 +231,8 @@ class TopoTag:
 			_, extrinsics = perspective_matrix_from_known_points(positions_3d, numpy.asarray(vertices))
 		except Exception as exc:
 			logger.warning("Degenerate camera configuration: %s", exc)
-			extrinsics = CameraExtrinsics(
-				random.uniform(-math.pi, math.pi),
-				random.uniform(-math.pi, math.pi),
-				random.uniform(-math.pi, math.pi),
-				random.uniform(-math.pi, math.pi),
-				random.uniform(-math.pi, math.pi),
-				random.uniform(-math.pi, math.pi)
-			)
+			# Break possible ties in backprop by picking some primes.  Not strictly necessary, but...
+			extrinsics = CameraExtrinsics(0.001, 0.003, 0.005, 0.007, 0.011, 0.013)
 		camera_intrinsics, extrinsics = refine_camera(positions_2d, positions_3d, camera_intrinsics, extrinsics)
 
 		result = TopoTag(
