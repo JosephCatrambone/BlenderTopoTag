@@ -36,6 +36,9 @@ class TopoTagTracker(bpy.types.Operator):
 		# Store scene context at start.
 		self.starting_parameters = dict()
 
+	def menu_func(self, context):
+		self.layout.operator(TopoTagTracker.bl_idname)
+
 	def create_or_fetch_fiducial(self, fid):
 		# Create and link a new fiducial in the fiducial collection if it exists OR create it and the collection.
 		if fid in self.fiducial_objects:
@@ -187,7 +190,7 @@ class TopoTagTracker(bpy.types.Operator):
 # Workflow
 #
 
-def load_image(filename) -> Matrix: # -> grey image matrix
+def load_image(filename) -> Matrix:  # -> grey image matrix
 	"""
 	Load an image and convert it to a luminance matrix (float) of the given resolution,
 	crop to aspect ratio and normalize to 0/1.

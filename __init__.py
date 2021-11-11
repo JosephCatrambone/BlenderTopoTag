@@ -30,13 +30,11 @@ else:
 import bpy
 
 
-def menu_func(self, context):
-	self.layout.operator(plugin_main.TopoTagTracker.bl_idname)
-
-
 def register():
 	bpy.utils.register_class(plugin_main.TopoTagTracker)
-	bpy.types.CLIP_MT_track.append(plugin_main.TopoTagTracker)
+	bpy.types.CLIP_MT_track.append(plugin_main.TopoTagTracker.menu_func)
+	#bpy.types.CLIP_MT_track.append(plugin_main.TopoTagTracker)
+	print("Topotag plugin registered")
 
 
 def unregister():

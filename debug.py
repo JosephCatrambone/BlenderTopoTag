@@ -12,11 +12,18 @@ def save_plain_ppm(img, filename: str):
 		idx = 0
 		for y in range(img.shape[0]):
 			for x in range(img.shape[1]):
-				fout.write(str(int(255 * img[y, x])))
-				fout.write(" ")
-				fout.write(str(int(255 * img[y, x])))
-				fout.write(" ")
-				fout.write(str(int(255 * img[y, x])))
+				if len(img.shape) == 2:
+					fout.write(str(int(255 * img[y, x])))
+					fout.write(" ")
+					fout.write(str(int(255 * img[y, x])))
+					fout.write(" ")
+					fout.write(str(int(255 * img[y, x])))
+				elif len(img.shape) == 3:
+					fout.write(str(int(255 * img[y, x, 0])))
+					fout.write(" ")
+					fout.write(str(int(255 * img[y, x, 1])))
+					fout.write(" ")
+					fout.write(str(int(255 * img[y, x, 2])))
 
 				if idx >= 5:  # Max line length is 70. 3 digits + space * 3 channels -> 12.  70/12 ~> 5.
 					fout.write("\n")

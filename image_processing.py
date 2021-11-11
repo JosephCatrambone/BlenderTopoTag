@@ -5,12 +5,23 @@ import numpy
 
 Matrix = NewType('Matrix', numpy.ndarray)
 
+
 def blur(mat, kernel_width=3):
 	center_y = mat.shape[0]//2
 	center_x = mat.shape[1]//2
 	filter = numpy.zeros_like(mat)
 	filter[center_y-kernel_width:center_y+kernel_width, center_x-kernel_width:center_x+kernel_width] = 1.0/(4*kernel_width*kernel_width)
 	return fft_convolve2d(mat, filter)
+
+
+def erode(mat: Matrix, min_nbrs: int = 8) -> Matrix:
+	center_y = mat.shape[0]//2
+	center_x = mat.shape[1]//2
+	filter = numpy.zeros_like(mat)
+	filter[center_y-1:center_y+2, center_x-1:center_x+2] = 1.0
+	result = fft_convolve2d(mat, filter)
+	result = (result > min_nbrs).astype(numpy.uint8)
+	return result
 
 
 def fft_convolve2d(mat, filter):
@@ -28,7 +39,7 @@ def fast_downscale(image_matrix, step=2):
 	return image_matrix[::step, ::step]
 
 
-def resize_linear(image_matrix, new_height:int, new_width:int):
+def resize_linear(image_matrix, new_height: int, new_width: int):
 	"""Perform a pure-numpy linear-resampled resize of an image."""
 	output_image = numpy.zeros((new_height, new_width), dtype=image_matrix.dtype)
 	original_height, original_width = image_matrix.shape

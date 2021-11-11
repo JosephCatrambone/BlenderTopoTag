@@ -9,7 +9,7 @@ import numpy
 from camera import CameraIntrinsics, CameraExtrinsics
 from computer_vision import perspective_matrix_from_known_points, refine_camera
 from island import flood_fill_connected
-from image_processing import Matrix
+from image_processing import Matrix, erode
 
 logger = logging.getLogger(__file__)
 
@@ -259,7 +259,8 @@ class TopoTag:
 
 def find_tags(image: Matrix) -> (List[Type[TopoTag]], list, Matrix):
 	"""Given a greyscale image matrix, return a tuple of (topotags, island data, connected component matrix)."""
-	binarized_image = binarize(image)
+	binarized_image = erode(erode(binarize(image)))
+	#from debug import save_plain_ppm, debug_show_tags
 	island_data, island_matrix = flood_fill_connected(binarized_image)
 
 	# We have a bunch of unconnected (flat) island data.
