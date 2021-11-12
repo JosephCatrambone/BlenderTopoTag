@@ -9,7 +9,7 @@ import numpy
 from camera import CameraIntrinsics, CameraExtrinsics
 from computer_vision import perspective_matrix_from_known_points, refine_camera
 from island import flood_fill_connected
-from image_processing import Matrix, erode
+from image_processing import Matrix, binarize, erode
 
 logger = logging.getLogger(__file__)
 
@@ -292,14 +292,6 @@ def find_tags(image: Matrix) -> (List[Type[TopoTag]], list, Matrix):
 		if tag:
 			topo_tags.append(tag)
 	return topo_tags, island_data, island_matrix
-
-
-def binarize(image_matrix: Matrix) -> Matrix:
-	"""Return a binary integer matrix with ones and zeros."""
-	# Should we just combine this with the make_threshold_map function?
-	#threshold_map = make_threshold_map(image_matrix)
-	#return (image_matrix >= threshold_map).astype(int)
-	return (image_matrix > image_matrix.mean()+image_matrix.std()*0.5).astype(int)
 
 
 def find_regions_along_line(origin: Tuple[float, float], dxdy: Tuple[float, float], island_id:int, island_data:list) -> list:

@@ -5,15 +5,11 @@ A plugin to extract topotags from video footage in Blender.
 """
 
 import logging
-import multiprocessing as mp
-import numpy
-import os
-import queue
 
+import numpy
 import bpy
 
-from debug import save_plain_ppm
-from image_processing import blur, fast_downscale, resize_linear, Matrix
+from image_processing import Matrix
 from fiducial import find_tags
 
 logger = logging.getLogger(__file__)
@@ -217,12 +213,4 @@ def convert_pixels(img) -> Matrix:
 	dst /= dst.max() or 1.0
 	return dst
 
-def make_threshold_map(input_matrix: Matrix) -> Matrix:  # -> grey image matrix
-	"""This is basically just blur."""
-	# Downscale by four.
-	resized = fast_downscale(input_matrix, step=4)
-	# Average / blur pixels.
-	blurred = blur(resized)
-	threshold = resize_linear(blurred, input_matrix.shape[0], input_matrix.shape[1]) * 0.5
-	return threshold
 

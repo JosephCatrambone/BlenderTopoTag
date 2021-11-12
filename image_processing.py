@@ -6,6 +6,26 @@ import numpy
 Matrix = NewType('Matrix', numpy.ndarray)
 
 
+def make_threshold_map(input_matrix: Matrix) -> Matrix:  # -> grey image matrix
+	"""This is basically just blur."""
+	# Downscale by four.
+	resized = fast_downscale(input_matrix, step=4)
+	# Average / blur pixels.
+	blurred = blur(resized)
+	# Resize twice
+	#threshold = fast_upscale(fast_upscale(blurred))  # Two downsteps, so two up-steps.
+	threshold = resize_linear(blurred, input_matrix.shape[0], input_matrix.shape[1]) * 0.5
+	return threshold
+
+
+def binarize(image_matrix: Matrix) -> Matrix:
+	"""Return a binary integer matrix with ones and zeros."""
+	# Should we just combine this with the make_threshold_map function?
+	#threshold_map = make_threshold_map(image_matrix)
+	#return (image_matrix >= threshold_map*0.9).astype(int)
+	return (image_matrix > image_matrix.mean()+image_matrix.std()).astype(int)
+
+
 def blur(mat, kernel_width=3):
 	center_y = mat.shape[0]//2
 	center_x = mat.shape[1]//2
@@ -37,6 +57,13 @@ def fft_convolve2d(mat, filter):
 
 def fast_downscale(image_matrix, step=2):
 	return image_matrix[::step, ::step]
+
+
+def fast_upscale(image_matrix):
+	out = numpy.zeros(shape=(image_matrix.shape[0]*2, image_matrix.shape[1]*2))
+	out[::2, ::2] = image_matrix[:, :]
+	out[1:-2:2, 1:-2:2] = (image_matrix[:-1,:-1]+image_matrix[1:,1:])/2
+	return out
 
 
 def resize_linear(image_matrix, new_height: int, new_width: int):

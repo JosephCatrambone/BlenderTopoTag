@@ -45,7 +45,7 @@ def debug_render_cube(tag: TopoTag, canvas):
 		[1, 1, 1, 1],
 		[0, 1, 1, 1],
 	])
-	projection_matrix = tag.pose_raw # tag.extrinsics.to_matrix()
+	projection_matrix = tag.pose_raw  # tag.extrinsics.to_matrix()
 	projection = (projection_matrix @ points_3d.T).T
 	projection[:, 0] /= projection[:, 2]
 	projection[:, 1] /= projection[:, 2]
