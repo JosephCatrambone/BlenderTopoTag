@@ -7,9 +7,11 @@ from typing import List, Type, Tuple, Optional
 import numpy
 
 from camera import CameraIntrinsics, CameraExtrinsics
-from computer_vision import perspective_matrix_from_known_points, refine_camera
+from computer_vision import perspective_matrix_from_known_points, refine_camera, \
+	homography_from_planar_projection_robust, decompose_homography
 from island import flood_fill_connected
 from image_processing import Matrix, binarize, erode
+from rotation import RotationMatrix
 
 logger = logging.getLogger(__file__)
 
@@ -224,16 +226,23 @@ class TopoTag:
 		k_value = int(math.sqrt(len(all_region_ids)))
 		if k_value < 3:
 			return None
-		positions_2d = numpy.asarray(TopoTag.generate_points(k_value))
-		positions_3d = numpy.hstack([positions_2d, numpy.zeros(shape=(positions_2d.shape[0], 1))])# @ numpy.linalg.inv(camera_intrinsics.to_matrix())
-		# pos_2d is our 'projection'.  Pretend it exists at the origin in R3.
+		# This may not seem like the world positions, but we're assuming that the tag is at work origin.
+		# vertices is the projection of the world position.
+		# To reiterate!!!: vertices is our 2d 'projection'.
+		world_positions_2d = numpy.asarray(TopoTag.generate_points(k_value))
+		world_positions_3d = numpy.hstack([world_positions_2d, numpy.zeros(shape=(world_positions_2d.shape[0], 1))])# @ numpy.linalg.inv(camera_intrinsics.to_matrix())
 		try:
-			_, extrinsics = perspective_matrix_from_known_points(positions_3d, numpy.asarray(vertices))
+			#_, extrinsics = perspective_matrix_from_known_points(world_positions_3d, numpy.asarray(vertices))
+			homography = homography_from_planar_projection_robust(world_positions_3d, numpy.asarray(vertices))
+			rotation_raw, translation = decompose_homography(homography)
+			rotation = RotationMatrix.from_zyx_matrix(rotation_raw)
+			extrinsics = CameraExtrinsics(rotation.x, rotation.y, rotation.z, x_translation=translation[0], y_translation=translation[1], z_translation=translation[2])
 		except Exception as exc:
 			logger.warning("Degenerate camera configuration: %s", exc)
+			extrinsics = CameraExtrinsics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 			# Break possible ties in backprop by picking some primes.  Not strictly necessary, but...
-			extrinsics = CameraExtrinsics(0.001, 0.003, 0.005, 0.007, 0.011, 0.013)
-		camera_intrinsics, extrinsics = refine_camera(positions_2d, positions_3d, camera_intrinsics, extrinsics)
+			#extrinsics = CameraExtrinsics(0.001, 0.003, 0.005, 0.007, 0.011, 0.013)
+			#camera_intrinsics, extrinsics = refine_camera(world_positions_2d, world_positions_3d, camera_intrinsics, extrinsics)
 
 		result = TopoTag(
 			code,
@@ -253,7 +262,7 @@ class TopoTag:
 
 def find_tags(image: Matrix) -> (List[Type[TopoTag]], list, Matrix):
 	"""Given a greyscale image matrix, return a tuple of (topotags, island data, connected component matrix)."""
-	binarized_image = erode(erode(binarize(image)))
+	binarized_image = erode(binarize(image))
 	#from debug import save_plain_ppm, debug_show_tags
 	island_data, island_matrix = flood_fill_connected(binarized_image)
 

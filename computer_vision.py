@@ -257,9 +257,14 @@ def decompose_homography_svd(homography:Matrix, intrinsics:CameraIntrinsics) -> 
 
 def decompose_homography(homography:Matrix) -> (Matrix, Matrix):
 	"""From "Deeper Understanding of The Homography Decomposition for Vision-Based Control."""
-	s = (homography @ homography.T) - numpy.eye(3)
+	#s = (homography @ homography.T) - numpy.eye(3)
 	# If all of the components of S become zero, it's the purely rotational case for this matrix and we need special handling.
-	pass
+	r = numpy.zeros((3, 3))
+	r[:, 0] = homography[:, 0]
+	r[:, 1] = homography[:, 1]
+	r[:, 2] = numpy.cross(homography[:, 0], homography[:, 1])
+	t = homography[:, 2]
+	return r, t
 
 def refine_camera(projected_points: Matrix, world_points: Matrix, intrinsic: CameraIntrinsics, extrinsic: CameraExtrinsics, max_iterations: int = 1000, epsilon: float = 1e-6, refine_k: bool = True, refine_rt: bool = True, step_scalar=0.95) -> Tuple[CameraIntrinsics, CameraExtrinsics]:
 	# Reproject the known 3d points and use the 2d error to tweak parameters.

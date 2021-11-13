@@ -8,6 +8,8 @@ from island import flood_fill_connected
 
 perf_benchmarks = """
 v0:
+File duration: 1359.35s (99.99%)
+File duration: 1299.04s (99.96%)
     66|        10|            0|            0|  0.00%|def flood_fill_connected(mat) -> Tuple[Matrix, list]:
     79|        10|            0|            0|  0.00%|	island_bounds = list()
     80|        10|            0|            0|  0.00%|	island_bounds.append(IslandBounds())  # Class 0 -> Nothing.
@@ -44,13 +46,15 @@ v0:
    106|        10|            0|            0|  0.00%|	return island_bounds, islands
 
 
-
+v1:
+File duration: 346.304s (99.93%)
+Speed boost: 3.9x
 """
 
 
 def run_connected_component_performance_bench():
 	for i in range(100, 2600, 250):
-		mat = numpy.random.uniform(size=(i,i)) > 0.0
+		mat = numpy.random.uniform(low=-1.0, high=1.0, size=(i,i)) > 0.0
 		mat = mat.astype(numpy.uint8)
 		_ = flood_fill_connected(mat)
 

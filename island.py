@@ -76,6 +76,38 @@ def flood_fill_connected(mat) -> Tuple[Matrix, list]:
 		bounds.x_max = 40
 		...
 	"""
+	# First we tag all the positive white/1 islands, then we fill the black/0 empty spaces.
+	islands = (mat > 0.0).astype(numpy.int)
+	connected_components = flood_fill(islands, foreground_class=1, starting_class_id=2)
+	connected_components_inv = flood_fill(1-islands, foreground_class=1, starting_class_id=connected_components.max()+1)
+	final_components = connected_components + connected_components_inv
+
+	# Collect our island data into useful adjacency info.
+	island_bounds = list()
+	for _ in range(final_components.max()+1):
+		island_bounds.append(IslandBounds())
+
+	# Go back through the final components and find the bounds.
+	for y in range(0, final_components.shape[0]):
+		for x in range(0, final_components.shape[1]):
+			island_bounds[final_components[y, x]].update_from_coordinate(x, y)
+
+	return island_bounds, islands
+
+
+def flood_fill_slow(mat) -> Tuple[Matrix, list]:
+	"""Takes a black and white matrix with 0 as 'empty' and connect components with value==1.
+	Returns a tuple with two items:
+	 - int matrix with every pixel assigned to a unique class from 2 to n.
+	 - A list of length(n+2) where class_n is the position of the bounds information in the list.
+
+	Example:
+		matrix[5, 3] == 18  # The pixel at x=3, y=5 is a member of class 18.
+		bounds = islands[18]
+		bounds.x_min == 3
+		bounds.x_max = 40
+		...
+	"""
 	island_bounds = list()
 	island_bounds.append(IslandBounds())  # Class 0 -> Nothing.
 	island_bounds.append(IslandBounds())  # Class 1 -> Nothing.
@@ -104,3 +136,47 @@ def flood_fill_connected(mat) -> Tuple[Matrix, list]:
 					latest_id += 1
 					island_bounds.append(new_island)
 	return island_bounds, islands
+
+
+def flood_fill(image: Matrix, foreground_class: int = 1, starting_class_id: int = 1) -> Matrix:
+	"""Flood fill the connected components based on the foreground class id."""
+	conflict_map = dict()
+	last_class_id = starting_class_id
+	labeling_started = False
+	component_image = numpy.zeros_like(image)
+	for y in range(image.shape[0]):
+		for x in range(image.shape[1]):
+			if image[y,x] == foreground_class:
+				# This is not a background pixel!
+				# Try to resolve it with the pixel left and above.
+				left_class = None
+				upper_class = None
+				if x-1 > 0 and image[y, x-1] == foreground_class:
+					left_class = component_image[y, x-1]
+				if y-1 > 0 and image[y-1, x] == foreground_class:
+					upper_class = component_image[y-1, x]
+
+				if left_class is not None and upper_class is not None:
+					# We may have a conflict.
+					if left_class != upper_class:
+						# We do!  Eventually we'll have to re-assign the max of these classes to be the min.
+						conflict_map[max(left_class, upper_class)] = min(left_class, upper_class)
+					component_image[y,x] = min(left_class, upper_class)
+				elif left_class is not None:
+					component_image[y,x] = left_class
+				elif upper_class is not None:
+					component_image[y,x] = upper_class
+				else:
+					component_image[y,x] = last_class_id
+				labeling_started = True
+			else:
+				# Now we do not have a connected component.
+				if labeling_started:
+					# We had assigned a component.
+					labeling_started = False
+					last_class_id += 1
+		# Now that we're done with our scan-line connected component bit, we have to reassign all our conflicts.
+		for conf, reassignment in conflict_map.items():
+			component_image[component_image == conf] = reassignment
+
+		return component_image
