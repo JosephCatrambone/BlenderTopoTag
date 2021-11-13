@@ -63,43 +63,11 @@ class IslandBounds:
 		return self.y_max - self.y_min
 
 
-def flood_fill_connected(mat) -> Tuple[Matrix, list]:
+def flood_fill_connected(mat) -> Tuple[list, Matrix]:
 	"""Takes a black and white matrix with 0 as 'empty' and connect components with value==1.
 	Returns a tuple with two items:
-	 - int matrix with every pixel assigned to a unique class from 2 to n.
 	 - A list of length(n+2) where class_n is the position of the bounds information in the list.
-
-	Example:
-		matrix[5, 3] == 18  # The pixel at x=3, y=5 is a member of class 18.
-		bounds = islands[18]
-		bounds.x_min == 3
-		bounds.x_max = 40
-		...
-	"""
-	# First we tag all the positive white/1 islands, then we fill the black/0 empty spaces.
-	islands = (mat > 0.0).astype(numpy.int)
-	connected_components = flood_fill(islands, foreground_class=1, starting_class_id=2)
-	connected_components_inv = flood_fill(1-islands, foreground_class=1, starting_class_id=connected_components.max()+1)
-	final_components = connected_components + connected_components_inv
-
-	# Collect our island data into useful adjacency info.
-	island_bounds = list()
-	for _ in range(final_components.max()+1):
-		island_bounds.append(IslandBounds())
-
-	# Go back through the final components and find the bounds.
-	for y in range(0, final_components.shape[0]):
-		for x in range(0, final_components.shape[1]):
-			island_bounds[final_components[y, x]].update_from_coordinate(x, y)
-
-	return island_bounds, islands
-
-
-def flood_fill_slow(mat) -> Tuple[Matrix, list]:
-	"""Takes a black and white matrix with 0 as 'empty' and connect components with value==1.
-	Returns a tuple with two items:
 	 - int matrix with every pixel assigned to a unique class from 2 to n.
-	 - A list of length(n+2) where class_n is the position of the bounds information in the list.
 
 	Example:
 		matrix[5, 3] == 18  # The pixel at x=3, y=5 is a member of class 18.
@@ -138,22 +106,53 @@ def flood_fill_slow(mat) -> Tuple[Matrix, list]:
 	return island_bounds, islands
 
 
-def flood_fill(image: Matrix, foreground_class: int = 1, starting_class_id: int = 1) -> Matrix:
+def flood_fill_broken(mat) -> Tuple[list, Matrix]:
+	"""Takes a black and white matrix with 0 as 'empty' and connect components with value==1.
+	Returns a tuple with two items:
+	 - int matrix with every pixel assigned to a unique class from 2 to n.
+	 - A list of length(n+2) where class_n is the position of the bounds information in the list.
+
+	Example:
+		matrix[5, 3] == 18  # The pixel at x=3, y=5 is a member of class 18.
+		bounds = islands[18]
+		bounds.x_min == 3
+		bounds.x_max = 40
+		...
+	"""
+	# First we tag all the positive white/1 islands, then we fill the black/0 empty spaces.
+	islands = (mat > 0.0).astype(numpy.int)
+	connected_components = _flood_fill_fast(islands, foreground_class=1, starting_class_id=2)
+	connected_components_inv = _flood_fill_fast(1-islands, foreground_class=1, starting_class_id=connected_components.max()+1)
+	final_components = connected_components + connected_components_inv
+
+	# Collect our island data into useful adjacency info.
+	island_bounds = list()
+	for i in range(final_components.max()+1):
+		island_bounds.append(IslandBounds(id=i))
+
+	# Go back through the final components and find the bounds.
+	for y in range(0, final_components.shape[0]):
+		for x in range(0, final_components.shape[1]):
+			island_bounds[final_components[y, x]].update_from_coordinate(x, y)
+
+	return island_bounds, final_components
+
+
+def _flood_fill_fast(image: Matrix, foreground_class: int = 1, starting_class_id: int = 1) -> Matrix:
 	"""Flood fill the connected components based on the foreground class id."""
 	conflict_map = dict()
 	last_class_id = starting_class_id
-	labeling_started = False
+	class_id_used = False
 	component_image = numpy.zeros_like(image)
 	for y in range(image.shape[0]):
 		for x in range(image.shape[1]):
 			if image[y,x] == foreground_class:
-				# This is not a background pixel!
 				# Try to resolve it with the pixel left and above.
 				left_class = None
 				upper_class = None
-				if x-1 > 0 and image[y, x-1] == foreground_class:
+				if x-1 >= 0 and image[y, x-1] == foreground_class:
 					left_class = component_image[y, x-1]
-				if y-1 > 0 and image[y-1, x] == foreground_class:
+				if y-1 >= 0 and image[y-1, x] == foreground_class:
 					upper_class = component_image[y-1, x]
 
 				if left_class is not None and upper_class is not None:
@@ -168,15 +167,15 @@ def flood_fill(image: Matrix, foreground_class: int = 1, starting_class_id: int 
 					component_image[y,x] = upper_class
 				else:
 					component_image[y,x] = last_class_id
-				labeling_started = True
+					class_id_used = True
 			else:
 				# Now we do not have a connected component.
-				if labeling_started:
+				if class_id_used:
 					# We had assigned a component.
-					labeling_started = False
 					last_class_id += 1
-		# Now that we're done with our scan-line connected component bit, we have to reassign all our conflicts.
-		for conf, reassignment in conflict_map.items():
-			component_image[component_image == conf] = reassignment
+					class_id_used = False
+	# Now that we're done with our scan-line connected component bit, we have to reassign all our conflicts.
+	for conf, reassignment in conflict_map.items():
+		component_image[component_image == conf] = reassignment
 
-		return component_image
+	return component_image
