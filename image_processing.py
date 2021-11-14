@@ -100,3 +100,11 @@ def resize_linear(image_matrix, new_height: int, new_width: int):
 			output_image[new_y, new_x] = final_blend
 
 	return output_image
+
+
+def equalize_histogram(mat: Matrix) -> Matrix:
+	if mat.mean() < 0.5:
+		mat *= 2.0 - mat.mean()
+	if mat.mean() < 0.5:
+		mat *= 2.0 - mat.mean()
+	return mat

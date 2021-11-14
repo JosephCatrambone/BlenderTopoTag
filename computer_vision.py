@@ -4,13 +4,35 @@ from typing import Tuple
 
 from camera import CameraIntrinsics, CameraExtrinsics
 from image_processing import Matrix
-from rotation import RotationMatrix
+
+
+estimation_model = None
+
 
 def magnitude(vec):
 	return sqrt(numpy.sum(vec * vec))
 
+
 def normalize(vec):
 	return vec / magnitude(vec)
+
+
+def estimate_from_correspondence(markers_2d: Matrix, projected: Matrix) -> Tuple[CameraIntrinsics, CameraExtrinsics]:
+	global estimation_model
+	if estimation_model is None:
+		estimation_model = numpy.load("iter_991_loss_354.npz")
+	# Coax correspondence to the right format and run.
+	x = numpy.zeros((36,))
+	for i in range(9):
+		x[4*i+0] = markers_2d[i, 0]
+		x[4*i+1] = markers_2d[i, 1]
+		x[4*i+2] = projected[i, 0]
+		x[4*i+3] = projected[i, 1]
+	for layer_id in range(0, len(estimation_model), 2):
+		x = estimation_model[layer_id+1] + (x @ estimation_model[layer_id].T)
+	# Should have 11 parameters now.
+	return CameraIntrinsics(x[0], x[1], x[2], x[3], x[4]), CameraExtrinsics(x[5], x[6], x[7], x[8], x[9], x[10])
+
 
 def perspective_matrix_from_known_points(world: Matrix, projected: Matrix) -> Matrix:
 	"""Compute the projection matrix from the projected image of the world coordinates.
@@ -187,7 +209,7 @@ def homography_from_planar_projection_basic(world_plane: Matrix, projection: Mat
 	return homography
 
 
-def homography_from_planar_projection_robust(projection: Matrix, world_plane: Matrix) -> Matrix:
+def homography_from_planar_projection_robust(world_plane: Matrix, projection: Matrix) -> Matrix:
 	"""Compute the 3x3 homography matrix, assuming world_plane is on the plane xy-plane with z=0.  Slower than basic,
 	but still works if the axis is inside the frame or h33 is at infinity."""
 	assert projection.shape[0] == world_plane.shape[0]
@@ -201,24 +223,24 @@ def homography_from_planar_projection_robust(projection: Matrix, world_plane: Ma
 		#  0  1  2  3  4  5    6      7
 		# [x, y, 1, 0, 0, 0, -x*x', -y*x'] * g = [x']
 		# [0, 0, 0, x, y, 1, -x*y', -y*y']     = [y']
-		a_mat[(idx * 2) + 0, 0] = x_w
-		a_mat[(idx * 2) + 0, 1] = y_w
-		a_mat[(idx * 2) + 0, 2] = 1
-		a_mat[(idx * 2) + 1, 3] = x_w
-		a_mat[(idx * 2) + 1, 4] = y_w
-		a_mat[(idx * 2) + 1, 5] = 1
+		a_mat[(idx * 2) + 0, 0] = -x_w
+		a_mat[(idx * 2) + 0, 1] = -y_w
+		a_mat[(idx * 2) + 0, 2] = -1
+		a_mat[(idx * 2) + 1, 3] = -x_w
+		a_mat[(idx * 2) + 1, 4] = -y_w
+		a_mat[(idx * 2) + 1, 5] = -1
 
-		a_mat[(idx * 2) + 0, 6] = -x_w*x_p
-		a_mat[(idx * 2) + 0, 7] = -y_w*x_p
-		a_mat[(idx * 2) + 0, 8] = -x_p
-		a_mat[(idx * 2) + 1, 6] = -x_w*y_p
-		a_mat[(idx * 2) + 1, 7] = -y_w*y_p
-		a_mat[(idx * 2) + 1, 8] = -y_p
+		a_mat[(idx * 2) + 0, 6] = x_w*x_p
+		a_mat[(idx * 2) + 0, 7] = y_w*x_p
+		a_mat[(idx * 2) + 0, 8] = x_p
+		a_mat[(idx * 2) + 1, 6] = x_w*y_p
+		a_mat[(idx * 2) + 1, 7] = y_w*y_p
+		a_mat[(idx * 2) + 1, 8] = y_p
 
 	a_mat = a_mat.T @ a_mat
 	assert a_mat.shape[0] == 9 and a_mat.shape[1] == 9
 
-	u, s, v = numpy.linalg.svd(a_mat.T @ a_mat)
+	u, s, v = numpy.linalg.svd(a_mat)
 	#_, _, h = numpy.linalg.svd(homo_mat, full_matrices=False)
 	homography = v[-1, :].reshape((3, 3))
 	return homography
@@ -255,6 +277,7 @@ def decompose_homography_svd(homography:Matrix, intrinsics:CameraIntrinsics) -> 
 
 	return rotation, t
 
+
 def decompose_homography(homography:Matrix) -> (Matrix, Matrix):
 	"""From "Deeper Understanding of The Homography Decomposition for Vision-Based Control."""
 	#s = (homography @ homography.T) - numpy.eye(3)
@@ -265,6 +288,37 @@ def decompose_homography(homography:Matrix) -> (Matrix, Matrix):
 	r[:, 2] = numpy.cross(homography[:, 0], homography[:, 1])
 	t = homography[:, 2]
 	return r, t
+
+
+def decompose_unnormalized_homography(homography: Matrix) -> Tuple[Matrix, Matrix]:
+	"""Given a not-yet-normalized homography, return rotation and translation.  rx, ry, rz, tx, ty, tz"""
+	h1, h2, h3 = homography[0, :]
+	h4, h5, h6 = homography[1, :]
+	h7, h8, h9 = homography[2, :]
+	# r1 and r2 are approximately unit rotations.  Use them to pull the scale factor.
+	r1 = homography[:, 0:1]
+	r2 = homography[:, 1:2]
+	r1_magnitude = sqrt(r1.T @ r1)
+	r2_magnitude = sqrt(r2.T @ r2)
+	scale_factor = 2.0 / (r1_magnitude + r2_magnitude)
+	# Extract translation:
+	tx = scale_factor*h3
+	ty = scale_factor*h6
+	tz = -scale_factor
+	# Start to recover rotation:
+	r1 /= r1_magnitude
+	r2 /= r2_magnitude
+	r1[2,0] = -r1[2,0]
+	r2[2,0] = -r2[2,0]
+	# r2 must be orthogonal to r1.
+	renorm_factor = (r1[0,0]*h2 + r1[1,0]*h5 - r1[2,0]*h8)   # If not for this stupid negation we could do a matmul.
+	r2 -= (r1*renorm_factor)
+	assert r1.T @ r2 == 0
+	r3 = (numpy.cross(r1[:,0], r2[:,0])).reshape((3,1))
+	rotation = numpy.hstack([r1, r2, r3])
+	assert rotation.shape == (3, 3)
+	return rotation, numpy.asarray([[tx], [ty], [tz]])
+
 
 def refine_camera(projected_points: Matrix, world_points: Matrix, intrinsic: CameraIntrinsics, extrinsic: CameraExtrinsics, max_iterations: int = 1000, epsilon: float = 1e-6, refine_k: bool = True, refine_rt: bool = True, step_scalar=0.95) -> Tuple[CameraIntrinsics, CameraExtrinsics]:
 	# Reproject the known 3d points and use the 2d error to tweak parameters.
@@ -333,5 +387,3 @@ def refine_camera(projected_points: Matrix, world_points: Matrix, intrinsic: Cam
 		ty -= (dty / projected_points.shape[0]) * step_scalar
 		tz -= (dtz / projected_points.shape[0]) * step_scalar
 	return CameraIntrinsics(fx, fy, skew, center_x, center_y), CameraExtrinsics(rx, ry, rz, tx, ty, tz)
-
-

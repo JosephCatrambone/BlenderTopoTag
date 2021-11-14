@@ -4,13 +4,16 @@ import random
 import numpy
 import pytest
 from computer_vision import perspective_matrix_from_known_points, refine_camera, decompose_homography, \
-	homography_from_planar_projection_basic, decompose_projection_matrix, decompose_homography_svd
+	homography_from_planar_projection_basic, decompose_projection_matrix, decompose_homography_svd, \
+	homography_from_planar_projection_robust
 from camera import CameraIntrinsics, CameraExtrinsics
 from rotation import RotationMatrix
+
 
 def rot_distance(a, b):
 	"""Return the 'difference' between a and b, assuming both are angles."""
 	return abs(math.cos(a) - math.cos(b))
+
 
 def test_homography_identity():
 	points = numpy.asarray([
@@ -28,17 +31,14 @@ def test_homography_identity():
 	h = homography_from_planar_projection_basic(points, projection)
 	assert numpy.allclose(h, numpy.eye(3))
 
+
 def test_homography_randomized():
 	for _ in range(100):
 		# Build points...
 		coplanar_points_on_z = numpy.random.uniform(low=-1, high=1, size=(16, 3))
 		coplanar_points_on_z[:, 2] = 1.0
 		# Build rotation part of homography.
-		rand_homography = RotationMatrix.x_rotation(random.random()*math.pi*2) @ RotationMatrix.y_rotation(random.random()*math.pi*2)
-		# Add translation component.
-		rand_homography[0,-1] = random.uniform(-10, 10)
-		rand_homography[1,-1] = random.uniform(-10, 10)
-		rand_homography[2,-1] = random.uniform(-10, 10)
+		rand_homography = numpy.random.uniform(low=-10, high=10, size=(3,3))
 		rand_homography /= rand_homography[-1, -1]
 		# Project and normalize points.
 		projected = (rand_homography @ coplanar_points_on_z.T).T
@@ -46,11 +46,62 @@ def test_homography_randomized():
 		projected[:,1] /= projected[:,2]
 		projected[:,2] /= projected[:,2]
 		# Compute
-		our_homography = homography_from_planar_projection_basic(coplanar_points_on_z, projected)
-		#cv_homography = cv2.estimateAffine3D(coplanar_points_on_z, projected)[1][0:3, 0:3]
+		basic_homography = homography_from_planar_projection_basic(coplanar_points_on_z, projected)
+		robust_homography = homography_from_planar_projection_robust(coplanar_points_on_z, projected)
+		basic_homography /= basic_homography[2, 2]
+		robust_homography /= robust_homography[2, 2]
 		# Evaluate
-		assert our_homography == pytest.approx(rand_homography)
+		assert basic_homography == pytest.approx(rand_homography)
+		assert robust_homography == pytest.approx(rand_homography)
 		#assert numpy.allclose(our_homography, cv_homography)
+
+
+def test_homography_translation():
+	# Move camera up, back, and left by ten units.
+	fake_homography = numpy.eye(3)
+	fake_homography[0, 2] = -3
+	fake_homography[1, 2] = -5
+	fake_homography[2, 2] = -7
+	points = numpy.random.uniform(low=-1, high=1, size=(16,3))
+	points[:, 0] /= points[:, 2]
+	points[:, 1] /= points[:, 2]
+	points[:, 2] /= points[:, 2]
+	transformed = (fake_homography @ points.T).T
+	transformed[:, 0] /= transformed[:, 2]
+	transformed[:, 1] /= transformed[:, 2]
+	transformed[:, 2] /= transformed[:, 2]
+	calculated_homography_basic = homography_from_planar_projection_basic(points, transformed)
+	calculated_homography_robust = homography_from_planar_projection_robust(points, transformed)
+	calculated_homography_robust /= calculated_homography_robust[2, 2]
+	print(fake_homography)
+	print(calculated_homography_basic)
+	print(calculated_homography_robust)
+	assert fake_homography == pytest.approx(calculated_homography_basic)
+	assert fake_homography == pytest.approx(calculated_homography_robust)
+
+
+def test_homography_rotation():
+	# Move camera up, back, and left by ten units.
+	fake_homography = RotationMatrix.x_rotation(-0.25 * math.pi) @ RotationMatrix.y_rotation(0.1 * math.pi)
+	fake_homography[:,2] = 0
+	fake_homography[2,2] = 1
+	points = numpy.random.uniform(low=-1, high=1, size=(16,3))
+	points[:, 0] /= points[:, 2]
+	points[:, 1] /= points[:, 2]
+	points[:, 2] /= points[:, 2]
+	transformed = (fake_homography @ points.T).T
+	transformed[:, 0] /= transformed[:, 2]
+	transformed[:, 1] /= transformed[:, 2]
+	transformed[:, 2] /= transformed[:, 2]
+	calculated_homography_basic = homography_from_planar_projection_basic(points, transformed)
+	calculated_homography_robust = homography_from_planar_projection_robust(points, transformed)
+	calculated_homography_robust /= calculated_homography_robust[2, 2]
+	print(fake_homography)
+	print(calculated_homography_basic)
+	print(calculated_homography_robust)
+	assert fake_homography == pytest.approx(calculated_homography_basic)
+	assert fake_homography == pytest.approx(calculated_homography_robust)
+
 
 def test_homography_round_trip():
 	intrinsics = CameraIntrinsics(1, 1, 0, 0, 0)
@@ -87,7 +138,7 @@ def test_homography_round_trip():
 		for tx, ty, tz in camera_positions:
 			cam = CameraExtrinsics(rx, ry, rz, tx, ty, tz)
 			projection = cam.project_points(numpy.hstack([points, numpy.ones(shape=(points.shape[0], 1))]), renormalize=True)[:,0:2]
-			h = homography_from_planar_projection_basic(points, projection)
+			h = homography_from_planar_projection_robust(points, projection)
 			rotation, translation = decompose_homography_svd(h, intrinsics)
 			est_projection_matrix = numpy.zeros(shape=(4,4))
 			est_projection_matrix[0:3,0:3] = rotation

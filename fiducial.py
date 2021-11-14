@@ -233,7 +233,7 @@ class TopoTag:
 		world_positions_3d = numpy.hstack([world_positions_2d, numpy.zeros(shape=(world_positions_2d.shape[0], 1))])# @ numpy.linalg.inv(camera_intrinsics.to_matrix())
 		try:
 			#_, extrinsics = perspective_matrix_from_known_points(world_positions_3d, numpy.asarray(vertices))
-			homography = homography_from_planar_projection_robust(world_positions_3d, numpy.asarray(vertices))
+			homography = homography_from_planar_projection_robust(numpy.asarray(vertices), world_positions_3d)
 			rotation_raw, translation = decompose_homography(homography)
 			rotation = RotationMatrix.from_zyx_matrix(rotation_raw)
 			extrinsics = CameraExtrinsics(rotation.x, rotation.y, rotation.z, x_translation=translation[0], y_translation=translation[1], z_translation=translation[2])
@@ -262,8 +262,10 @@ class TopoTag:
 
 def find_tags(image: Matrix) -> (List[Type[TopoTag]], list, Matrix):
 	"""Given a greyscale image matrix, return a tuple of (topotags, island data, connected component matrix)."""
+	print("Binarize...")
 	binarized_image = erode(binarize(image))
 	#from debug import save_plain_ppm, debug_show_tags
+	print("Flood fill...")
 	island_data, island_matrix = flood_fill_connected(binarized_image)
 
 	# We have a bunch of unconnected (flat) island data.
@@ -274,6 +276,7 @@ def find_tags(image: Matrix) -> (List[Type[TopoTag]], list, Matrix):
 
 	# TODO: There's a stupid O(n^2) and then there's a REALLY stupid _this_.
 	# Iterate over the island_matrix and get the pairs of touching components, then build the hierarchy from that.
+	print("Find touching nbrs...")
 	touching_pairs = set()
 	for y in range(island_matrix.shape[0]-1):
 		for x in range(island_matrix.shape[1]-1):
@@ -295,6 +298,7 @@ def find_tags(image: Matrix) -> (List[Type[TopoTag]], list, Matrix):
 	# Ballpark camera intrinsics for now.
 	camera_intrinsics = CameraIntrinsics(1.0, 1.0, 0.0, binarized_image.shape[1] // 2, binarized_image.shape[0] // 2)
 
+	print("Extract tags...")
 	topo_tags = list()
 	for island_id in range(2, len(island_data)):
 		tag = TopoTag.from_island_data(island_id, island_data, camera_intrinsics)

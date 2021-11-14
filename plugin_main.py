@@ -9,7 +9,7 @@ import logging
 import numpy
 import bpy
 
-from image_processing import Matrix
+from image_processing import Matrix, equalize_histogram
 from fiducial import find_tags
 
 logger = logging.getLogger(__file__)
@@ -164,7 +164,7 @@ class TopoTagTracker(bpy.types.Operator):
 			#scene.frame_set(current_frame)
 			image = self.capture_frame(scene, current_frame, scene.render.resolution_x, scene.render.resolution_y)
 			#self.image_queue.put((self.current_frame, image))
-			tags, _, _ = find_tags(image)
+			tags, island_data, connected = find_tags(image)
 			for tag in tags:
 				print(f"Found tag {tag.tag_id} with extrinsic: {tag.extrinsics}")
 				scene_tag = self.create_or_fetch_fiducial(fid=tag.tag_id)
@@ -205,12 +205,16 @@ def convert_image(img) -> Matrix:
 	# Normalize:
 	dst -= dst.min()
 	dst /= dst.max() or 1.0
+	dst = equalize_histogram(dst)
 	return dst
 
 def convert_pixels(img) -> Matrix:
-	dst = numpy.mean(img, axis=-1)
+	# Rather than average across the three channels, sum them.
+	dst = numpy.sum(img.astype(numpy.float32), axis=-1)/3.0
+	# Also normalize
 	dst -= dst.min()
 	dst /= dst.max() or 1.0
+	dst = equalize_histogram(dst)
 	return dst
 
 

@@ -2,6 +2,7 @@ import pprofile
 from datetime import datetime
 
 import numpy
+import pytest
 
 from island import flood_fill_connected
 
@@ -50,6 +51,53 @@ v1:
 File duration: 346.304s (99.93%)
 Speed boost: 3.9x
 """
+
+
+def test_flood_fill_1():
+	img_data = numpy.asarray([
+		[0, 1, 0, 0, 0, 0],
+		[1, 1, 0, 1, 0, 1],
+		[1, 0, 0, 1, 0, 1],
+		[0, 1, 0, 0, 1, 1]
+	])
+
+	expected_output = numpy.asarray([
+		[7, 2, 8, 8, 8, 8],
+		[2, 2, 8, 4, 8, 5],
+		[2, 8, 8, 4, 8, 5],
+		[10, 6, 8, 8, 5, 5],
+	])
+
+	components, island_data = flood_fill_connected(img_data)
+	assert numpy.alltrue(expected_output == components)
+
+
+def test_flood_fill_2():
+	img_data = numpy.asarray([
+		[0, 0, 1, 0, 0, 0, 0],
+		[0, 1, 1, 0, 1, 0, 1],
+		[0, 1, 0, 0, 1, 0, 1],
+		[0, 0, 1, 0, 1, 1, 1]
+	])
+
+	expected_output = numpy.asarray([
+		[7, 7, 2, 8, 8, 8, 8],
+		[7, 2, 2, 8, 4, 8, 4],
+		[7, 2, 8, 8, 4, 8, 4],
+		[7, 7, 6, 8, 4, 4, 4],
+	])
+
+	components, island_data = flood_fill_connected(img_data)
+	assert components[0, 2] == components[1, 2]
+	assert components[0, 2] == components[1, 1]
+	assert components[0, 2] == components[2, 1]
+	assert components[0, 2] != components[0, 0]
+
+	assert components[3, 2] != components[3, 1]
+	assert components[3, 2] != components[2, 2]
+
+	assert components[1, 4] == components[1, 6]
+	assert components[1, 4] != components[1, 5]
 
 
 def run_connected_component_performance_bench():
