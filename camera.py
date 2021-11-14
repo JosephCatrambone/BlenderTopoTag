@@ -1,19 +1,19 @@
 import math
-from dataclasses import dataclass
-from typing import NewType, Optional
+from dataclasses import dataclass, field
+from typing import Optional, Type
 
 import numpy
 
 from image_processing import Matrix
-from rotation import RotationMatrix
+from rotation import Quaternion, RotationMatrix
 
 @dataclass
 class CameraIntrinsics:
-	focal_length_x: float
-	focal_length_y: float
-	skew: float
-	principal_point_x: int
-	principal_point_y: int
+	focal_length_x: float = 1.0
+	focal_length_y: float = 1.0
+	skew: float = 0.0
+	principal_point_x: int = 0
+	principal_point_y: int = 0
 
 	def to_matrix(self):
 		return numpy.asarray([
@@ -45,12 +45,12 @@ class CameraIntrinsics:
 
 @dataclass
 class CameraExtrinsics:
-	x_rotation: float
-	y_rotation: float
-	z_rotation: float
-	x_translation: float
-	y_translation: float
-	z_translation: float  # The camera looks forward to -Z when all rotation is zero.
+	rx: float = 0.0
+	ry: float = 0.0
+	rz: float = 0.0
+	tx: float = 0.0
+	ty: float = 0.0
+	tz: float = 0.0
 
 	def project_points(self, points_3d: Matrix, camera_intrinsics: Optional[CameraIntrinsics] = None, renormalize: bool = False) -> Matrix:
 		"""Projects a matrix of size [nx3] OR [nx4] to [nx3].  If renormalize is True, will return [[x, y, 1], ...]."""
@@ -88,28 +88,28 @@ class CameraExtrinsics:
 		if points_2d.shape[1] != 3:
 			raise Exception(f"Got points_2d array with unexpected shape: {points_2d.shape}")
 		points = camera_intrinsics.to_inverse_matrix() @ points_2d.T  # Points is now 3xn
-		rotation_matrix = RotationMatrix(self.x_rotation, self.y_rotation, self.z_rotation).to_matrix()
+		rotation_matrix = RotationMatrix(self.rx, self.ry, self.rz).to_matrix()
 		# When multiplying by the 3x4 we rotate, then translate, so when we invert we un-translate, then rotate.
-		points[0, :] -= self.x_translation
-		points[1, :] -= self.y_translation
-		points[2, :] -= self.z_translation
+		points[0, :] -= self.tx
+		points[1, :] -= self.ty
+		points[2, :] -= self.tz
 		return (rotation_matrix.T @ points).T
 
 	def to_matrix(self):
 		return numpy.hstack([
-			RotationMatrix(self.x_rotation, self.y_rotation, self.z_rotation).to_matrix(),
-			numpy.asarray([[self.x_translation, self.y_translation, self.z_translation]]).T
+			RotationMatrix(self.rx, self.ry, self.rz).to_matrix(),
+			numpy.asarray([[self.tx], [self.ty], [self.tz]])
 		])
 
 	def to_inverse_matrix(self):
 		"""Return the inverse of this operation."""
 		return numpy.hstack([
-			RotationMatrix(self.x_rotation, self.y_rotation, self.z_rotation).to_matrix().T,
-			-numpy.asarray([[self.x_translation, self.y_translation, self.z_translation]]).T
+			RotationMatrix(self.rx, self.ry, self.rz).to_matrix().T,
+			-numpy.asarray([[self.tx], [self.ty], [self.tz]])
 		])
 
 	@classmethod
-	def from_rotation_and_translation(cls, rotation:Matrix, translation:Matrix):
+	def from_rotation_and_translation(cls, rotation: Matrix, translation: Matrix):
 		translation = translation.reshape(-1)
 		rot = RotationMatrix.from_zyx_matrix(rotation)
 		return cls(rot.x, rot.y, rot.z, translation[0], translation[1], translation[2])

@@ -8,6 +8,7 @@ def rot_distance(a, b):
 	"""Return the 'difference' between a and b, assuming both are angles."""
 	return abs(math.cos(a) - math.cos(b))
 
+
 def test_projection_inline():
 	cam = CameraExtrinsics(0, 0, 0, 0, 0, 0)
 	points_3d = numpy.asarray([
@@ -24,6 +25,7 @@ def test_projection_inline():
 		[0, 0],
 	]))
 
+
 def test_projection_rotate_about_z():
 	cam = CameraExtrinsics(0, 0, math.pi, 0, 0, 0)
 	points_3d = numpy.asarray([
@@ -38,6 +40,7 @@ def test_projection_rotate_about_z():
 		[-10, 0],
 		[0, -10],
 	]))
+
 
 def test_projection():
 	cam_extrinsics = CameraExtrinsics(0, 0, 0, 0, 0, 1)
@@ -63,6 +66,7 @@ def test_projection():
 			[0., 0.25, 1.]
 		])
 	)
+
 
 def test_invert_transform():
 	cam_intrinsics = CameraIntrinsics(1, 1, 0, 0, 0)

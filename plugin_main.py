@@ -171,7 +171,7 @@ class TopoTagTracker(bpy.types.Operator):
 				if tag.intrinsics is not None and tag.extrinsics is not None:
 					bpy.data.scenes["Scene"].frame_set(current_frame)
 					scene_tag.location = (-tag.extrinsics.x_translation, -tag.extrinsics.y_translation, -tag.extrinsics.z_translation)
-					scene_tag.rotation_euler = (-tag.extrinsics.x_rotation, -tag.extrinsics.y_rotation, -tag.extrinsics.z_rotation)
+					scene_tag.rotation_euler = (-tag.extrinsics.rx, -tag.extrinsics.ry, -tag.extrinsics.rz)
 					scene_tag.keyframe_insert(data_path="location", frame=current_frame)
 					scene_tag.keyframe_insert(data_path="rotation_euler", frame=current_frame)
 					#if moving_object.rotation_mode == "QUATERNION":

@@ -107,6 +107,7 @@ def run_connected_component_performance_bench():
 		_ = flood_fill_connected(mat)
 
 
+@pytest.mark.skip()
 def test_connected_component_runtime():
 	#cProfile.runctx('run_connected_component_performance_bench()', globals(), locals(), filename=None)
 	profiler = pprofile.Profile()

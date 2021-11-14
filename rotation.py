@@ -5,13 +5,43 @@ import numpy
 
 
 @dataclass
+class Quaternion:
+	x: float
+	y: float
+	z: float
+	w: float
+
+	@classmethod
+	def identity(cls):
+		return Quaternion(0, 0, 0, 1)
+
+	@classmethod
+	def from_rotation_matrix(cls, matrix):
+		qw = math.sqrt(math.fabs(matrix[0,:].sum() + 1)) / 2.0
+		qx = (matrix[2,1] - matrix[1,2]) / (4.0 * qw)
+		qy = (matrix[0,2] - matrix[2,0]) / (4.0 * qw)
+		qz = (matrix[1,0] - matrix[0,1]) / (4.0 * qw)
+		return Quaternion(qx, qy, qz, qw)
+
+	def to_matrix(self):
+		# Shorthands for the complicated matrix setup:
+		x = self.x
+		y = self.y
+		z = self.z
+		w = self.w
+		return numpy.asarray([
+			[w*w+x*x-y*y-z*z,		(2*x*y)-(2*w*z),		(2*x*z)+(2*w*y)],
+			[2*(x*y+w*z),		w*w-x*x+y*y-z*z,		(2*y*z)-(2*w*x)],
+			[(2*x*z)-(2*w*y),		(2*y*z)+(2*w*x),		(w*w-x*x-y*y+z*z)]
+		])
+
+
+@dataclass
 class RotationMatrix:
 	# To invert, x, y, z = -z, -y, -x
-
-	def __init__(self, x, y, z):
-		self.x = x
-		self.y = y
-		self.z = z
+	x: float
+	y: float
+	z: float
 
 	@classmethod
 	def from_zyx_matrix(cls, r):

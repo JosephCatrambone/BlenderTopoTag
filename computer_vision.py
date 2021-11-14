@@ -292,6 +292,7 @@ def decompose_homography(homography:Matrix) -> (Matrix, Matrix):
 
 def decompose_unnormalized_homography(homography: Matrix) -> Tuple[Matrix, Matrix]:
 	"""Given a not-yet-normalized homography, return rotation and translation.  rx, ry, rz, tx, ty, tz"""
+	homography = homography[:, :] / homography[2, 2]
 	h1, h2, h3 = homography[0, :]
 	h4, h5, h6 = homography[1, :]
 	h7, h8, h9 = homography[2, :]
@@ -313,7 +314,6 @@ def decompose_unnormalized_homography(homography: Matrix) -> Tuple[Matrix, Matri
 	# r2 must be orthogonal to r1.
 	renorm_factor = (r1[0,0]*h2 + r1[1,0]*h5 - r1[2,0]*h8)   # If not for this stupid negation we could do a matmul.
 	r2 -= (r1*renorm_factor)
-	assert r1.T @ r2 == 0
 	r3 = (numpy.cross(r1[:,0], r2[:,0])).reshape((3,1))
 	rotation = numpy.hstack([r1, r2, r3])
 	assert rotation.shape == (3, 3)
@@ -328,12 +328,12 @@ def refine_camera(projected_points: Matrix, world_points: Matrix, intrinsic: Cam
 	skew = intrinsic.skew
 	center_x = intrinsic.principal_point_x
 	center_y = intrinsic.principal_point_y
-	rx = extrinsic.x_rotation
-	ry = extrinsic.y_rotation
-	rz = extrinsic.z_rotation
-	tx = extrinsic.x_translation
-	ty = extrinsic.y_translation
-	tz = extrinsic.z_translation
+	rx = extrinsic.rx
+	ry = extrinsic.ry
+	rz = extrinsic.rz
+	tx = extrinsic.tx
+	ty = extrinsic.ty
+	tz = extrinsic.tz
 	for iter in range(1, max_iterations):
 		intrinsic = CameraIntrinsics(fx, fy, skew, center_x, center_y)
 		extrinsic = CameraExtrinsics(rx, ry, rz, tx, ty, tz)

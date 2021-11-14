@@ -8,10 +8,10 @@ import numpy
 
 from camera import CameraIntrinsics, CameraExtrinsics
 from computer_vision import perspective_matrix_from_known_points, refine_camera, \
-	homography_from_planar_projection_robust, decompose_homography
+	homography_from_planar_projection_robust, decompose_unnormalized_homography
 from island import flood_fill_connected
 from image_processing import Matrix, binarize, erode
-from rotation import RotationMatrix
+from rotation import RotationMatrix, Quaternion
 
 logger = logging.getLogger(__file__)
 
@@ -234,9 +234,11 @@ class TopoTag:
 		try:
 			#_, extrinsics = perspective_matrix_from_known_points(world_positions_3d, numpy.asarray(vertices))
 			homography = homography_from_planar_projection_robust(numpy.asarray(vertices), world_positions_3d)
-			rotation_raw, translation = decompose_homography(homography)
-			rotation = RotationMatrix.from_zyx_matrix(rotation_raw)
-			extrinsics = CameraExtrinsics(rotation.x, rotation.y, rotation.z, x_translation=translation[0], y_translation=translation[1], z_translation=translation[2])
+			#rotation_raw, translation = decompose_homography(homography)
+			rotation_raw, translation = decompose_unnormalized_homography(homography)
+			rotation = Quaternion.from_rotation_matrix(rotation_raw)
+			# translation[2] is always 1 because of the homography and we need to recover it by scale info.
+			extrinsics = CameraExtrinsics(rotation.x, rotation.y, rotation.z, x_translation=translation[0], y_translation=translation[1], z_translation=1)
 		except Exception as exc:
 			logger.warning("Degenerate camera configuration: %s", exc)
 			extrinsics = CameraExtrinsics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
