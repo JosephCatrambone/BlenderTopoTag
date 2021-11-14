@@ -13,7 +13,7 @@ def test_identity():
 	assert numpy.allclose(RotationMatrix.z_rotation(0), ident)
 
 def test_to_euler_ident():
-	rot = RotationMatrix.from_zyx_matrix(numpy.eye(3))
+	rot = RotationMatrix.from_matrix(numpy.eye(3))
 	assert abs(rot.x) < 1e-6
 	assert abs(rot.y) < 1e-6
 	assert abs(rot.z) < 1e-6

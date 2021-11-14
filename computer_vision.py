@@ -20,7 +20,7 @@ def normalize(vec):
 def estimate_from_correspondence(markers_2d: Matrix, projected: Matrix) -> Tuple[CameraIntrinsics, CameraExtrinsics]:
 	global estimation_model
 	if estimation_model is None:
-		estimation_model = numpy.load("iter_991_loss_354.npz")
+		estimation_model = list(numpy.load("iter_986_loss_277.npz", allow_pickle=True)['arr_0'][:])
 	# Coax correspondence to the right format and run.
 	x = numpy.zeros((36,))
 	for i in range(9):

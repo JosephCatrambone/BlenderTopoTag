@@ -111,5 +111,5 @@ class CameraExtrinsics:
 	@classmethod
 	def from_rotation_and_translation(cls, rotation: Matrix, translation: Matrix):
 		translation = translation.reshape(-1)
-		rot = RotationMatrix.from_zyx_matrix(rotation)
+		rot = RotationMatrix.from_matrix(rotation)
 		return cls(rot.x, rot.y, rot.z, translation[0], translation[1], translation[2])

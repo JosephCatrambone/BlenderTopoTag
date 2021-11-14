@@ -44,11 +44,14 @@ class RotationMatrix:
 	z: float
 
 	@classmethod
-	def from_zyx_matrix(cls, r):
+	def from_matrix(cls, r):
 		"""Return x, y, z such that this (R) = ZYX"""
-		x = math.atan2(r[2,1], r[2,2])
-		y = math.atan2(-r[2,0], math.sqrt(r[2,1]*r[2,1] + r[2,2]*r[2,2]))
-		z = math.atan2(r[1,0], r[0,0])
+		#x = math.atan2(r[2,1], r[2,2])
+		x = math.asin(r[2,1])
+		#y = math.atan2(-r[2,0], math.sqrt(r[2,1]*r[2,1] + r[2,2]*r[2,2]))
+		y = math.atan2(-r[2,1], r[2,2])
+		#z = math.atan2(r[1,0], r[0,0])
+		z = math.atan2(-r[0,1], r[1,1])
 		return cls(x, y, z)
 
 	def to_matrix(self, order='xyz'):

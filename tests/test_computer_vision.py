@@ -108,57 +108,6 @@ def test_homography_rotation():
 	assert fake_homography == pytest.approx(calculated_homography_robust)
 
 
-def test_homography_round_trip():
-	intrinsics = CameraIntrinsics(1, 1, 0, 0, 0)
-	points = numpy.asarray([
-		[0, 0, -1],
-		[10, 0, -1],
-		[0, 10, -1],
-		[10, 10, -1],
-		[2, 1, -1],
-		[1, 2, -1],
-		[5, 5, -1],
-		[7, 9, -1],
-		[9, 7, -1],
-	])
-	camera_positions = [
-		(0, 0, 0),
-		(0, 0, -10),
-		(0, 0, 10),
-		(0, 3, 0),
-		(1, 0, 0),
-		(1, 5, 0),
-		(10, 5, 2),
-	]
-	camera_rotations = [
-		(0, 0, 0),
-		(-0.1, 0, 0),
-		(0.1, 0, 0),
-		(0, -0.1, 0),
-		(0, 0.1, 0),
-		(0, 0, -0.1),
-		(0, 0, 0.1),
-	]
-	for rx, ry, rz in camera_rotations:
-		for tx, ty, tz in camera_positions:
-			cam = CameraExtrinsics(rx, ry, rz, tx, ty, tz)
-			projection = cam.project_points(numpy.hstack([points, numpy.ones(shape=(points.shape[0], 1))]), renormalize=True)[:,0:2]
-			h = homography_from_planar_projection_robust(points, projection)
-			rotation, translation = decompose_homography_svd(h, intrinsics)
-			est_projection_matrix = numpy.zeros(shape=(4,4))
-			est_projection_matrix[0:3,0:3] = rotation
-			est_projection_matrix[0:3,3] = translation[:,0]
-			est_projection_matrix[3,3] = 1
-			est_projection = (est_projection_matrix @ numpy.hstack([points, numpy.ones(shape=(points.shape[0], 1))]).T).T
-			est_projection[:,0] /= est_projection[:, 3]
-			est_projection[:,1] /= est_projection[:, 3]
-			est_projection = est_projection[:,0:2]
-			diff = projection - est_projection
-			#assert numpy.allclose(diff[:,0:2], numpy.zeros_like(projection[:,0:2]), rtol=1e-4, atol=1e-4)
-			# Translation of the camera moves it in the opposite direction.
-			assert translation[0,0] == pytest.approx(tx)
-			assert translation[1,0] == pytest.approx(ty)
-
 def test_refine_pose():
 	coplanar_points_on_z = numpy.random.uniform(low=-1, high=1, size=(16, 3))
 	coplanar_points_on_z[:, 2] = 0.0
@@ -171,6 +120,7 @@ def test_refine_pose():
 	estimated_intrinsics, estimated_extrinsics = refine_camera(projection, coplanar_points_on_z, estimated_intrinsics, estimated_extrinsics, refine_k=False, refine_rt=True, max_iterations=2000)
 	#assert numpy.allclose(target_intrinsics.to_matrix(), estimated_intrinsics.to_matrix())
 	assert numpy.allclose(target_extrinsics.to_matrix(), estimated_extrinsics.to_matrix(), rtol=0.4, atol=0.5)
+
 
 @pytest.mark.parametrize('translation', [(0, 0, -2), (0, 0, 2), (1, 0, -2), (1, 0, 2), (0, 1, -2), (0, 1, 2)])
 @pytest.mark.parametrize('rotation', [(0, 0, 0), (0.1, 0.0, 0.0), (0, 0.1, 0), (0, 0, 0.1), (0.1, 0, 0.1)])
@@ -209,7 +159,7 @@ def test_decompose_perspective(translation, rotation):
 		perspective_matrix_from_known_points(coplanar_points_on_z, projection))
 	#estimated_intrinsics, estimated_extrinsics = refine_camera(projection, coplanar_points_on_z, estimated_intrinsics, estimated_extrinsics)
 	#assert known_extrinsics.to_matrix() == pytest.approx(estimated_extrinsics.to_matrix())
-	rot = RotationMatrix.from_zyx_matrix(estimated_rotation)
+	rot = RotationMatrix.from_matrix(estimated_rotation)
 	assert known_extrinsics.rx == pytest.approx(rot.x)
 	assert known_extrinsics.ry == pytest.approx(rot.y)
 	assert known_extrinsics.rz == pytest.approx(rot.z)
